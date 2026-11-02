@@ -248,6 +248,8 @@ extension CodexEngine {
     static func dynamicToolSpecs() -> [[String: Any]] {
         let allow = toolAllowlist.map(Set.init)
         let defs = ToolRegistry.shared.enabledDefinitions.filter { def in
+            // 子代理已并入 Codex，不再作为独立工具暴露
+            if def.name.lowercased().hasPrefix("subagent") { return false }
             guard let allow else { return true }
             return allow.contains(def.name)
         }

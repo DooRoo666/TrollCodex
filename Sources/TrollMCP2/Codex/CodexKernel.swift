@@ -8,23 +8,10 @@ enum CodexKernel {
     /// 免 UI 开关：Documents/trollcodex-kernel.txt 内容写 codex 即启用
     static var flagFilePath: String { NSHomeDirectory() + "/Documents/trollcodex-kernel.txt" }
 
+    /// Codex 是唯一内核，没有 OpenAI 回退通道。
     static var isEnabled: Bool {
-        get {
-            // 1) 文件开关优先（免 UI 调试）
-            if let raw = try? String(contentsOfFile: flagFilePath, encoding: .utf8) {
-                return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "codex"
-            }
-            // 2) 环境变量
-            if ProcessInfo.processInfo.environment["TROLLCODEX"] == "1" { return true }
-            // 3) 用户显式设置过就听设置
-            let defaults = UserDefaults.standard
-            if defaults.object(forKey: defaultsKey) != nil {
-                return defaults.bool(forKey: defaultsKey)
-            }
-            // 4) 都没配置：设备上有 codex 运行时就默认用它
-            return binaryPath != nil
-        }
-        set { UserDefaults.standard.set(newValue, forKey: defaultsKey) }
+        get { true }
+        set { }
     }
 
     /// codex 可执行文件候选路径（按顺序探测）

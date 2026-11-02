@@ -1659,9 +1659,8 @@ final class ConversationStore: ObservableObject {
             }
         }
 
-        let client: ChatEngine = CodexKernel.isEnabled
-                ? CodexEngine(config: config)
-                : OpenAIClient(config)
+        // Codex 是唯一内核：没有 OpenAI 回退路径
+        let client: ChatEngine = CodexEngine(config: config)
         // v7.2.3-fix6：鉴权智能试探成功 → 持久化纠正（对齐 OpenMinis BYOK 智能匹配）
         client.onAuthCorrected = { [weak self] method in
             guard let self = self else { return }
@@ -2855,16 +2854,27 @@ final class ConversationStore: ObservableObject {
             completion(false, "会话不长，无需压缩")
             return
         }
-        let client = OpenAIClient(config)
-        client.summarize(prepared.compactSource) { [weak self] summary in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let s = summary, !s.isEmpty {
-                    self.applyCompaction(summary: s, droppedCount: prepared.droppedCount)
-                    completion(true, "已压缩 \(prepared.droppedCount) 条历史消息")
-                } else {
-                    completion(false, "摘要生成失败（网络或模型问题），未压缩")
-                }
+        // 摘要也走 Codex，全 App 不出现第二条模型通道
+        let transcript = prepared.compactSource.map { "\($0.role.uppercased()): \($0.content)" }
+            .joined(separator: "\n\n")
+        let prompt = """
+        你是对话压缩器。把下面的历史对话压成一份中文摘要，保留：
+        1) 用户的目标与约束；2) 已确认的事实与结论；3) 已完成的改动与文件路径；4) 未完成事项。
+        只输出摘要正文，不要解释，不要寒暄。
+
+        历史对话：
+        \(transcript)
+        """
+        CodexOneShot.complete(prompt: prompt, timeout: 180) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let summary) where !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                self.applyCompaction(summary: summary, droppedCount: prepared.droppedCount)
+                completion(true, "已压缩 \(prepared.droppedCount) 条历史消息")
+            case .success:
+                completion(false, "摘要为空，未压缩")
+            case .failure(let error):
+                completion(false, "摘要失败：\(error.localizedDescription)")
             }
         }
     }
