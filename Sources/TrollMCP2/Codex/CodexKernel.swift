@@ -5,9 +5,15 @@ import Foundation
 enum CodexKernel {
     private static let defaultsKey = "trollcodex.kernel.enabled"
 
+    /// 免 UI 开关：Documents/trollcodex-kernel.txt 内容写 codex 即启用
+    static var flagFilePath: String { NSHomeDirectory() + "/Documents/trollcodex-kernel.txt" }
+
     static var isEnabled: Bool {
         get {
             if ProcessInfo.processInfo.environment["TROLLCODEX"] == "1" { return true }
+            if let raw = try? String(contentsOfFile: flagFilePath, encoding: .utf8) {
+                return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "codex"
+            }
             return UserDefaults.standard.bool(forKey: defaultsKey)
         }
         set { UserDefaults.standard.set(newValue, forKey: defaultsKey) }
