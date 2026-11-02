@@ -130,10 +130,12 @@ final class CodexEngine: ChatEngine {
                 self.thinkingText += delta
                 DispatchQueue.main.async { self.thinkingSink?(delta) }
 
-            case "item/started":
-                if let item = params["item"] as? [String: Any],
-                   let type = item["type"] as? String {
-                    DispatchQueue.main.async { self.statusSink?("Codex: \(type)") }
+            case "item/started", "item/completed":
+                // 工具卡片：命令 / MCP 工具调用 / 文件改动都走这里，先以状态行呈现
+                if let item = params["item"] as? [String: Any] {
+                    let label = Self.describe(item)
+                    let prefix = method == "item/completed" ? "✓ " : "▶ "
+                    DispatchQueue.main.async { self.statusSink?(prefix + label) }
                 }
 
             case "turn/completed":
@@ -177,5 +179,24 @@ final class CodexEngine: ChatEngine {
     static func lastUserText(in messages: [ChatMessage]) -> String {
         let userMessages = messages.filter { $0.role == "user" }
         return userMessages.last?.content ?? ""
+    }
+
+    static func describe(_ item: [String: Any]) -> String {
+        let type = (item["type"] as? String) ?? "item"
+        switch type {
+        case "commandExecution":
+            let cmd = (item["command"] as? String) ?? ""
+            let short = cmd.count > 80 ? String(cmd.prefix(80)) + "…" : cmd
+            if let code = item["exitCode"] as? Int { return "命令 \(short) → \(code)" }
+            return "命令 \(short)"
+        case "mcpToolCall":
+            let server = (item["server"] as? String) ?? "mcp"
+            let tool = (item["tool"] as? String) ?? ""
+            return "工具 \(server).\(tool)"
+        case "fileChange": return "文件改动"
+        case "reasoning":  return "推理"
+        case "agentMessage": return "回复"
+        default: return type
+        }
     }
 }
