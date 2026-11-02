@@ -51,7 +51,7 @@ final class CodexOneShot {
                 self?.handle(method, params)
             }
             // 一次性任务不需要写文件，所有审批一律拒绝
-            rpc.onServerRequest = { _, _, _ in ["decision": "denied"] }
+            rpc.onServerRequest = { _, _, _ in ["decision": "denied"] as [String: Any] }
 
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
                 self?.finish(.failure(CodexRPCError(code: -6, message: "Codex 响应超时")))

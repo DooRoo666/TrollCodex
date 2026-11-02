@@ -2855,12 +2855,29 @@ final class ConversationStore: ObservableObject {
             return
         }
         // 摘要也走 Codex，全 App 不出现第二条模型通道
-        let transcript = prepared.compactSource.map { "\($0.role.uppercased()): \($0.content)" }
-            .joined(separator: "\n\n")
+        let transcript = prepared.compactSource.map { m -> String in
+            let label: String
+            switch m.role {
+            case "user": label = "用户"
+            case "assistant": label = "助手"
+            case "tool": label = "工具结果（\(m.toolName ?? "tool")）"
+            default: label = m.role
+            }
+            return "【\(label)】\n\(m.content)"
+        }.joined(separator: "\n\n")
         let prompt = """
-        你是对话压缩器。把下面的历史对话压成一份中文摘要，保留：
-        1) 用户的目标与约束；2) 已确认的事实与结论；3) 已完成的改动与文件路径；4) 未完成事项。
-        只输出摘要正文，不要解释，不要寒暄。
+        你是对话压缩引擎。把下面的历史对话压成一份中文 Markdown 摘要，让后续回合能无缝接上。
+        若输入开头已有旧摘要，则与之合并成一份新摘要，不要重复、不要丢信息。必须包含 9 节：
+        1. 请求与意图：用户核心诉求、成功标准、约束；
+        2. 关键技术概念：领域细节、技术约束、已达成的约定；
+        3. 文件与代码：改动/新建的文件、路径、关键代码段；
+        4. 错误与修复：已解决的报错、失败的尝试、重要决策；
+        5. 方案：试过或选定的解题策略；
+        6. 用户原话：按顺序逐条引用；
+        7. 待办：未完成事项、阻塞、优先级；
+        8. 进行中：当前状态，已完成 vs 进行中；
+        9. 下一步：具体动作。
+        只输出摘要正文，不要寒暄，不要复述原文。
 
         历史对话：
         \(transcript)
