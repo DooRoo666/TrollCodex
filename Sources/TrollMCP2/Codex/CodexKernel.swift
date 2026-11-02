@@ -88,11 +88,23 @@ enum CodexAvailability {
 extension CodexKernel {
     /// 首次运行时写最小 config.toml：把本 App 注册成 Codex 的 MCP 工具服务端。
     /// 这样 Codex 拉起的 stdout 事件里，工具调用会以 McpToolCallThreadItem 出现。
+    /// MCP 通道默认关闭；Documents/trollcodex-mcp.txt 存在时才注册（给外部客户端复用）
+    static var mcpOptInPath: String { NSHomeDirectory() + "/Documents/trollcodex-mcp.txt" }
+
     static func ensureConfig() {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: homePath, withIntermediateDirectories: true)
         migrateAuthIfNeeded()
+
         let path = homePath + "/config.toml"
+        guard fm.fileExists(atPath: mcpOptInPath) else {
+            // 清掉旧版本自动写过的 MCP 注册，避免和 dynamicTools 重复
+            if let old = try? String(contentsOfFile: path, encoding: .utf8),
+               old.contains("# TrollCodex 自动生成") {
+                try? fm.removeItem(atPath: path)
+            }
+            return
+        }
         guard !fm.fileExists(atPath: path) else { return }
         let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
         let exe = Bundle.main.bundlePath + "/" + exeName

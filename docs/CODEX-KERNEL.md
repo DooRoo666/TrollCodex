@@ -83,3 +83,22 @@ Codex 的 `thread/start` 支持 `dynamicTools`（`{type:"function",name,descript
 | 失败点 | 少 | 路径/权限/启动顺序/超时 |
 
 所以默认走 `dynamicTools`；`CodexMCPServer` 保留给外部 MCP 客户端（VS Code / Obsidian）复用同一批工具。
+
+
+## 工具分层（默认策略）
+
+| 层 | 通道 | 说明 |
+|---|---|---|
+| 文件读写、跑命令、打补丁、联网搜索 | Codex **内置工具** | 不注册，避免和 `shell_exec` / `read_file` 打架 |
+| 手机独有能力（HID 注入、截图、装包、解密、HomeKit、定位、OCR…） | `dynamicTools` | 进程内回调，`item/tool/call` |
+| 外部客户端复用（VS Code / Obsidian） | MCP stdio | 默认关，`Documents/trollcodex-mcp.txt` 存在才启用 |
+
+### 白名单
+
+`Documents/trollcodex-tools.txt`：
+
+- 文件不存在 → 用代码里的默认表（约 28 个设备类工具）
+- 空文件 / 全是注释 → 暴露全部工具
+- 每行一个工具名（按 `ToolRegistry` 原名，如 `control.screenshot`），`#` 开头忽略
+
+改完重启 App 生效，不用重编译。

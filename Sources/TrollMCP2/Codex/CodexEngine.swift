@@ -220,8 +220,38 @@ extension CodexEngine {
         return String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
     }
 
+    /// 默认只暴露"Codex 内置工具做不到"的设备能力；文件/命令/搜索交给 Codex 自己。
+    static var defaultToolNames: [String] { [
+        "device.info", "device.snapshot", "device.refresh_container",
+        "app.status", "app.launch", "app.stop", "app.install", "app.uninstall",
+        "control.screenshot", "control.tap_text", "control.tap_selector",
+        "control.type_text", "control.find",
+        "browser.navigate", "browser.snapshot", "browser.text", "browser.click",
+        "injection.list", "injection.status", "injection.enable", "injection.disable",
+        "ipa.inspect", "app.decrypt", "app.entitlements",
+        "ocr.image", "reminder", "location.get",
+        "shell.exec"   // 先用它做兜底；确认 Codex 自带 shell 在 iOS 可用后删掉
+    ] }
+
+    /// Documents/trollcodex-tools.txt：每行一个工具名；文件不存在=用默认表，空文件=全部工具
+    static var toolAllowlist: [String]? {
+        let path = NSHomeDirectory() + "/Documents/trollcodex-tools.txt"
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return defaultToolNames
+        }
+        let lines = raw.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        return lines.isEmpty ? nil : lines
+    }
+
     static func dynamicToolSpecs() -> [[String: Any]] {
-        ToolRegistry.shared.enabledDefinitions.map { def in
+        let allow = toolAllowlist.map(Set.init)
+        let defs = ToolRegistry.shared.enabledDefinitions.filter { def in
+            guard let allow else { return true }
+            return allow.contains(def.name)
+        }
+        return defs.map { def in
             var props: [String: Any] = [:]
             for (key, desc) in def.parameters {
                 props[key] = ["type": "string", "description": desc]
