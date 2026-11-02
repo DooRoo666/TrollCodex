@@ -1,7 +1,7 @@
 import Foundation
 
 /// 内核选择与运行时配置。
-/// 默认仍走 OpenAIClient；只有当用户显式切到 Codex 或环境变量 TROLLCODEX=1 时才启用。
+/// 默认：检测到 codex 运行时就以 Codex 为内核；否则回退 OpenAIClient。
 enum CodexKernel {
     private static let defaultsKey = "trollcodex.kernel.enabled"
 
@@ -10,13 +10,19 @@ enum CodexKernel {
 
     static var isEnabled: Bool {
         get {
-            if ProcessInfo.processInfo.environment["TROLLCODEX"] == "1" { return true }
-            // 没有显式配置时：设备上有 codex 运行时就默认用它当内核
-            if UserDefaults.standard.object(forKey: key) == nil { return binaryPath != nil }
+            // 1) 文件开关优先（免 UI 调试）
             if let raw = try? String(contentsOfFile: flagFilePath, encoding: .utf8) {
                 return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "codex"
             }
-            return UserDefaults.standard.bool(forKey: defaultsKey)
+            // 2) 环境变量
+            if ProcessInfo.processInfo.environment["TROLLCODEX"] == "1" { return true }
+            // 3) 用户显式设置过就听设置
+            let defaults = UserDefaults.standard
+            if defaults.object(forKey: defaultsKey) != nil {
+                return defaults.bool(forKey: defaultsKey)
+            }
+            // 4) 都没配置：设备上有 codex 运行时就默认用它
+            return binaryPath != nil
         }
         set { UserDefaults.standard.set(newValue, forKey: defaultsKey) }
     }
