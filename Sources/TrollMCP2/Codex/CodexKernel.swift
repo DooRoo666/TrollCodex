@@ -11,6 +11,8 @@ enum CodexKernel {
     static var isEnabled: Bool {
         get {
             if ProcessInfo.processInfo.environment["TROLLCODEX"] == "1" { return true }
+            // 没有显式配置时：设备上有 codex 运行时就默认用它当内核
+            if UserDefaults.standard.object(forKey: key) == nil { return binaryPath != nil }
             if let raw = try? String(contentsOfFile: flagFilePath, encoding: .utf8) {
                 return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "codex"
             }
