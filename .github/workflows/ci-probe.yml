@@ -1,0 +1,26 @@
+# 最小探针：判断 macOS runner 是否可用（跑不动时本文件给出决定性信号）
+# 与主构建无关，可随时删除。
+name: ci-probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Hello from macOS
+        run: |
+          uname -a
+          sw_vers
+          xcodebuild -version || true
+          swift --version || true
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hello from Linux
+        run: |
+          uname -a
+          echo "linux runner ok"
