@@ -16,7 +16,8 @@ final class CodexOneShot {
                          onDelta: ((String) -> Void)? = nil,
                          completion: @escaping Completion) {
         let key = "oneshot-" + UUID().uuidString
-        let config = ModelStore.shared.selected
+        // Codex-only 场景下模型库可能为空：config 只是 usage 记账用，没有也不影响出结果
+        let config = ModelStore.shared.defaultConfig
 
         // 单轮串行：主对话在跑时会话被拒绝，这里给一个短失败（调用方本来就有兜底）
         _ = CodexRuntime.shared.submit(

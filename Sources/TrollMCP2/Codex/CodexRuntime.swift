@@ -128,7 +128,7 @@ final class CodexRuntime {
                 prompt: String,
                 instructions: String?,
                 images: [String] = [],
-                config: ModelConfig,
+                config: ModelConfig?,
                 approvalMode: CodexTurnApprovalMode = .inherit,
                 onStatus: ((String) -> Void)?,
                 onDelta: ((String) -> Void)?,
@@ -540,11 +540,16 @@ final class CodexRuntime {
         let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
         switch result {
         case .success(let payload):
-            UsageRecorder.shared.end(config: turn.config, ok: true, elapsedMs: elapsed, usage: usage)
+            // Codex-only 场景下模型库可能为空（用户只在 codex 里登录）——config 可选，没有就不记 usage
+            if let cfg = turn.config {
+                UsageRecorder.shared.end(config: cfg, ok: true, elapsedMs: elapsed, usage: usage)
+            }
             DispatchQueue.main.async { turn.completion(.success(payload)) }
         case .failure(let error):
-            UsageRecorder.shared.end(config: turn.config, ok: false, elapsedMs: elapsed,
-                                     error: error.localizedDescription, usage: usage)
+            if let cfg = turn.config {
+                UsageRecorder.shared.end(config: cfg, ok: false, elapsedMs: elapsed,
+                                         error: error.localizedDescription, usage: usage)
+            }
             DispatchQueue.main.async { turn.completion(.failure(error)) }
         }
     }
@@ -602,7 +607,7 @@ final class CodexTurn {
     let instructions: String?
     let prompt: String
     let images: [String]
-    let config: ModelConfig
+    let config: ModelConfig?
     let approvalMode: CodexTurnApprovalMode
 
     let onStatus: ((String) -> Void)?
@@ -624,7 +629,7 @@ final class CodexTurn {
          instructions: String?,
          prompt: String,
          images: [String],
-         config: ModelConfig,
+         config: ModelConfig?,
          approvalMode: CodexTurnApprovalMode,
          onStatus: ((String) -> Void)?,
          onDelta: ((String) -> Void)?,
