@@ -1487,6 +1487,8 @@ final class ConversationStore: ObservableObject {
     /// 切后台：在途流式请求转交 background session 系统代传。
     /// 成功接管 → cancel 原流式（-999 静默，不弹错误气泡）；不支持（协议/中转）→ 不动，靠 fix72 前台重试。
     func handoffActiveRequestToBackground() {
+        // Codex 是唯一内核：请求在 codex 子进程里跑，切后台无法代传到 OpenAI 通道
+        guard !CodexKernel.isEnabled else { return }
         guard isLoading, currentClient != nil,
               let ctx = lastRequestContext else { return }
         // v7.4.0-fix73c：只有流式请求才值得代传——cancel+非流式重发的参数形态真的变了
