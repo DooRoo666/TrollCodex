@@ -65,3 +65,21 @@ args = ["--codex-mcp"]
 3. 多会话：`threadID` 按会话持久化，避免重启后重开线程
 4. 图片/大结果：MCP 只能回文本，截图落盘回路径
 5. `send` 的 `messages` 目前只取最后一条 user，历史交给 Codex 的 thread 状态
+
+
+## 为什么不是只用 MCP
+
+Codex 的 `thread/start` 支持 `dynamicTools`（`{type:"function",name,description,inputSchema}`），
+模型调用时以 **服务端请求 `item/tool/call`** 回调客户端，客户端回
+`{contentItems:[{type:"inputText",text}] | {type:"inputImage",imageUrl}, success:Bool}`。
+
+对比 MCP：
+
+| | 动态工具（默认） | MCP stdio |
+|---|---|---|
+| 进程 | App 进程内直接跑 | 另起一个自己的副本当 server |
+| 传输 | JSON-RPC 同一连接 | stdin/stdout 子进程管道 |
+| 工具结果 | 文本 **+ 图片** | 只能文本 |
+| 失败点 | 少 | 路径/权限/启动顺序/超时 |
+
+所以默认走 `dynamicTools`；`CodexMCPServer` 保留给外部 MCP 客户端（VS Code / Obsidian）复用同一批工具。

@@ -96,8 +96,10 @@ final class CodexRPC {
 
         // 服务端反向请求（带 id）
         if let idValue = obj["id"], let id = idValue as? Int {
-            let result = onServerRequest?(id, method, params) ?? [:]
-            reply(id: id, result: result)
+            // 返回 nil 表示"由调用方异步回包"（例如动态工具要跑完再回）
+            if let handler = onServerRequest, let result = handler(id, method, params) {
+                reply(id: id, result: result)
+            }
             return
         }
 

@@ -61,7 +61,7 @@ final class CodexEngine: ChatEngine {
                     self.startTurn(threadID: id, prompt: prompt, onStatus: onStatus)
                 } else {
                     onStatus?("创建会话…")
-                    self.rpc.request("thread/start", params: [:]) { [weak self] result in
+                    self.rpc.request("thread/start", params: self.threadStartParams()) { [weak self] result in
                         guard let self else { return }
                         switch result {
                         case .failure(let error):
@@ -151,8 +151,12 @@ final class CodexEngine: ChatEngine {
             }
         }
 
-        rpc.onServerRequest = { [weak self] _, method, params in
+        rpc.onServerRequest = { [weak self] id, method, params in
             guard let self else { return [:] }
+            if method == "item/tool/call" {
+                self.handleDynamicToolCall(id: id, params: params)
+                return nil      // 异步回包
+            }
             if let handler = self.approvalHandler { return handler(method, params) }
             // 默认：全部放行（个人研究用途；正式版应接 UI 确认框）
             switch method {
@@ -198,5 +202,73 @@ final class CodexEngine: ChatEngine {
         case "agentMessage": return "回复"
         default: return type
         }
+    }
+}
+
+// MARK: - 动态工具（进程内，不经 MCP/子进程）
+
+extension CodexEngine {
+    func threadStartParams() -> [String: Any] {
+        var params: [String: Any] = ["cwd": NSHomeDirectory()]
+        let specs = Self.dynamicToolSpecs()
+        if !specs.isEmpty { params["dynamicTools"] = specs }
+        return params
+    }
+
+    static func sanitize(_ name: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+        return String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+    }
+
+    static func dynamicToolSpecs() -> [[String: Any]] {
+        ToolRegistry.shared.enabledDefinitions.map { def in
+            var props: [String: Any] = [:]
+            for (key, desc) in def.parameters {
+                props[key] = ["type": "string", "description": desc]
+            }
+            return [
+                "type": "function",
+                "name": sanitize(def.name),
+                "description": def.summary,
+                "inputSchema": ["type": "object", "properties": props]
+            ]
+        }
+    }
+
+    static func originalToolName(_ sanitized: String) -> String {
+        for def in ToolRegistry.shared.enabledDefinitions where sanitize(def.name) == sanitized {
+            return def.name
+        }
+        return sanitized
+    }
+
+    /// item/tool/call -> 在 App 进程内直接跑 ToolRegistry，结果回给 Codex
+    func handleDynamicToolCall(id: Int, params: [String: Any]) {
+        let invoked = (params["tool"] as? String) ?? ""
+        let name = Self.originalToolName(invoked)
+        let args = (params["arguments"] as? [String: Any]) ?? [:]
+        DispatchQueue.main.async { self.statusSink?("▶ 工具 \(name)") }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let response: [String: Any]
+            do {
+                let out = try ToolRegistry.shared.dispatch(name: name, params: args)
+                let text = Self.jsonText(out)
+                response = ["contentItems": [["type": "inputText", "text": text]], "success": true]
+            } catch {
+                response = ["contentItems": [["type": "inputText", "text": "ERROR: \(error.localizedDescription)"]], "success": false]
+            }
+            DispatchQueue.main.async { self?.statusSink?("✓ 工具 \(name)") }
+            self?.rpc.reply(id: id, result: response)
+        }
+    }
+
+    static func jsonText(_ object: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let text = String(data: data, encoding: .utf8) else {
+            return String(describing: object)
+        }
+        return text
     }
 }
