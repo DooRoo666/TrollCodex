@@ -160,6 +160,11 @@ struct ChatView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
                 withAnimation(.easeOut(duration: 0.25)) { keyboardHeight = 0 }
+                // v7.1.289：键盘收起后输入栏必须回到一行高——否则上次撑开的 4 行高度会一直留着，
+                // 看起来像"对话栏收不回去"（inputHeight 由 UIKit 上报，外部清空文本时不会自己缩）
+                if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    withAnimation(.easeOut(duration: 0.2)) { inputHeight = 36 }
+                }
             }
             .overlay(Group {
                 if showToast {
@@ -521,6 +526,7 @@ struct ChatView: View {
         guard let cfg = modelStore.defaultConfig else { return }
         if store.selectedId == nil { store.newConversation() }
         inputText = ""
+        inputHeight = 36
         store.send(text, using: cfg, reasoningLevel: thinkEnabled ? reasoning : 5, smartSearch: smartSearch)
     }
 
@@ -620,6 +626,8 @@ struct ChatView: View {
                 .simultaneousGesture(
                     TapGesture().onEnded { dismissKeyboard() }
                 )
+                // v7.1.289：下滑手势直接收键盘（iOS16+；iOS15 仍靠点空白收起）
+                .keyboardDismissOnScroll()
                 // v7.4.1-fix73h：内容总高/视口高/滚动偏移全部由 ScrollGeometryBridge 的 KVO 上报
                 // （不再依赖 preference 的 onPreferenceChange——其到达顺序与更新时机在 iOS 16 不可靠）
                 // v7.4.0-fix73d：悬浮滚动按钮（对齐 Minis 显示矩阵：顶部只显 down、中间 up+down、底部全隐）
@@ -1057,6 +1065,7 @@ struct ChatView: View {
             text = text.isEmpty ? attDesc.joined(separator: " ") : text + " " + attDesc.joined(separator: " ")
         }
         inputText = ""
+        inputHeight = 36   // v7.1.289：清空后输入栏回一行，避免残留多行高度
         pendingImages = []
         // v2.9.10：附件预览与发送联动——从附件里取图片 dataURL（若预览被删则不再发送）
         let attImgs = pendingAttachments.compactMap { $0.dataURL }
@@ -1383,6 +1392,7 @@ struct ChatView: View {
         default: break
         }
         inputText = ""
+        inputHeight = 36
     }
 
     private func mentionApp(_ app: AppCatalog.AppEntry) {
@@ -3333,6 +3343,9 @@ struct ChatInputTextView: UIViewRepresentable {
     var onSend: () -> Void
     @Binding var height: CGFloat
 
+    static let minHeight: CGFloat = 36
+    static let maxHeight: CGFloat = 4 * (UIFont.systemFont(ofSize: 16).lineHeight).rounded(.up) + 12
+
     func makeUIView(context: Context) -> RSKGrowingTextView {
         let tv = RSKGrowingTextView()
         tv.backgroundColor = .clear
@@ -3343,23 +3356,86 @@ struct ChatInputTextView: UIViewRepresentable {
         tv.minimumNumberOfLines = 1
         tv.maximumNumberOfLines = 4
         tv.delegate = context.coordinator
+        // v7.1.289：明确零内边距（AppMain 已全局清 UITextView.appearance()，这里对本控件再明确一次，
+        // 避免滚动/候选栏出现时内边距变化把高度算偏）；滚动行为仍交给 RSKGrowingTextView 自己管
+        tv.textContainerInset = .zero
+        tv.textContainer.lineFragmentPadding = 0
         return tv
     }
 
     func updateUIView(_ uiView: RSKGrowingTextView, context: Context) {
-        uiView.text = text
-        height = uiView.intrinsicContentSize.height
+        context.coordinator.parent = self
+
+        // 关键修复（"输入法弹出后对话栏收不回"的根因之一）：
+        // 旧版每轮 SwiftUI 更新都无条件 `uiView.text = text`。输入法组词期间
+        // （markedTextRange != nil）这会清掉未上屏的拼音，并在键盘动画期间反复重置
+        // 光标/尺寸 → 候选栏卡住、输入栏高度回不去。现在只在"外部真的改了文本"
+        // 且"当前不在组词"时才回写。
+        if uiView.text != text, uiView.markedTextRange == nil {
+            uiView.text = text
+            context.coordinator.publishHeight(uiView, force: true)
+            return
+        }
+
+        // 高度也不在视图更新期间直接写 @State（SwiftUI 会丢更新或告警）
+        context.coordinator.publishHeight(uiView, force: false)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     final class Coordinator: NSObject, RSKGrowingTextViewDelegate {
         var parent: ChatInputTextView
+        private var lastPublished: CGFloat = -1
+
         init(_ p: ChatInputTextView) { parent = p }
+
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
-            parent.height = textView.intrinsicContentSize.height
+            publishHeight(textView, force: true)
         }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            publishHeight(textView, force: true)
+        }
+
+        /// 编辑结束（键盘收起 / 失焦）→ 空文本立刻回到一行
+        func textViewDidEndEditing(_ textView: UITextView) {
+            publishHeight(textView, force: true)
+        }
+
+        /// 统一算高并异步发布，带 0.5pt 抖动过滤，避免与 SwiftUI 更新循环互相打架
+        func publishHeight(_ textView: UITextView, force: Bool) {
+            let empty = textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let raw = empty ? ChatInputTextView.minHeight : textView.intrinsicContentSize.height
+            let clamped = min(max(raw, ChatInputTextView.minHeight), ChatInputTextView.maxHeight)
+            guard force || abs(clamped - lastPublished) > 0.5 else { return }
+            lastPublished = clamped
+
+            DispatchQueue.main.async {
+                guard abs(self.parent.height - clamped) > 0.5 else { return }
+                self.parent.height = clamped
+            }
+        }
+    }
+}
+
+// MARK: - v7.1.289：下滑收键盘
+
+private struct KeyboardDismissOnScroll: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content.scrollDismissesKeyboard(.interactively)
+        } else {
+            content
+        }
+    }
+}
+
+fileprivate extension View {
+    /// iOS16+ 下滑手势收键盘；iOS15 无此 API，退回"点空白处收起"
+    func keyboardDismissOnScroll() -> some View {
+        modifier(KeyboardDismissOnScroll())
     }
 }
 

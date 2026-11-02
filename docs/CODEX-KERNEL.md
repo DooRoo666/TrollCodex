@@ -33,10 +33,10 @@ UI 不变，工具不变：Codex 通过 MCP 反向调用 TrollAgent 自己的 `T
 ## 开关
 
 ```swift
-CodexKernel.isEnabled = true     // 设置页可接一个 Toggle
+CodexKernel.isEnabled = true     // 恒为 true（Codex 是唯一内核，没有 OpenAI 回退）
 ```
 
-关闭时完全走原来的 `OpenAIClient`，零行为变化。
+关闭分支已不存在；设备上没有 codex 运行时，对话会直接报错并给出安装指引。
 
 ## 运行前提
 
@@ -60,11 +60,41 @@ args = ["--codex-mcp"]
 
 ## 待办（P1）
 
-1. 审批：`item/commandExecution/requestApproval` 等目前默认放行，需接 UI 弹窗
-2. 工具卡：把 `item/started|completed` 映射到现有 `AssistantBlock` 卡片
-3. 多会话：`threadID` 按会话持久化，避免重启后重开线程
-4. 图片/大结果：MCP 只能回文本，截图落盘回路径
-5. `send` 的 `messages` 目前只取最后一条 user，历史交给 Codex 的 thread 状态
+1. ~~审批：`item/commandExecution/requestApproval` 等目前默认放行，需接 UI 弹窗~~ → **已做**，见下节
+2. ~~工具卡：把 `item/started|completed` 映射到现有 `AssistantBlock` 卡片~~ → **已做**（`applyCodexToolCard`）
+3. ~~多会话：`threadID` 按会话持久化，避免重启后重开线程~~ → **已做**（`CodexThreadStore`）
+4. 图片/大结果：MCP 只能回文本，截图落盘回路径 → 图片项已接（`Documents/trollcodex-images.txt` 开关，默认关）
+5. ~~`send` 的 `messages` 目前只取最后一条 user，历史交给 Codex 的 thread 状态~~ → **已做**（新 thread 自动重放最近 24 条）
+
+## 2026-11-02 升级：上下文与稳定性（P0 落地）
+
+上一版的根因不是协议，而是**生命周期**：`Models` 每个请求 `CodexEngine(config:)` 新实例 →
+新 `CodexRPC` → 新进程 → 新 thread，于是每轮 1~3s 冷启动、上下文每轮清零（`send` 只送最后一条 user，
+thread 又是新的）。工具、UI 都看不出问题，但"记不住上文"是必然的。
+
+现在拆成三层：
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 进程/线程 | `Codex/CodexRuntime.swift` | 常驻一个 `codex app-server`；thread 按会话键复用并落盘 `Documents/trollcodex-threads.json`；单 turn 串行；看门狗 30 分钟；进程死了下一轮自动重建 |
+| 协议翻译 | `Codex/CodexEngine.swift` | 把 `messages` 拼成一轮 prompt（system 消息 → `baseInstructions`，不支持则降级）、tool 事件 → `CodexToolCard`、usage → `UsageRecorder` |
+| 审批 | `Codex/CodexApproval.swift` | 真弹框（`ask`/`auto`/`deny`，`Documents/trollcodex-approval.txt` 或设置页切换），带"本会话内全部允许" |
+
+配套：
+
+- `Codex/CodexRuntimeStatusView.swift` + 设置页入口：运行时路径、进程状态、已持久化会话数、清空上下文
+- `CodexProcess`：读线程只持自己的 fd（旧版 `terminate()` 会从另一个线程 close 正在读的 fd）、退出码改用 `waitpid` 真值
+- `dynamicTools` 参数类型不再一律 `string`；清洗名撞名自动加序号（`a.b` vs `a_b`）
+- 一次性摘要（`CodexOneShot`）复用同一进程，审批一律拒绝，写完即丢 thread
+
+### 仍然分属"第二条通道"（不是坏，是设计）
+
+| 能力 | 通道 | 说明 |
+|---|---|---|
+| HUD 悬浮窗语音 | HTTP `chat/completions` | 独立进程，读 `trollmodel_configs.json` / App Group 配置；需要在模型页保留一份可用配置 |
+| 后台代传（切后台继续跑） | — | `handoffActiveRequestToBackground` 仍直接 return：请求活在 codex 子进程里，系统不给代传 |
+| 子代理 `subagent.*` | 原生 Codex 任务拆解 | 已从 `dynamicTools` 过滤（Codex 自己能拆任务）；`SubAgentTool` 仍走 `OpenAIClient`，无 key 时不可用 |
+
 
 
 ## 为什么不是只用 MCP

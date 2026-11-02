@@ -1,30 +1,33 @@
 import Foundation
 
-/// Codex 内核：用 `codex app-server` 取代 OpenAIClient 的模型调用。
-/// 工具由 Codex 自己通过 MCP 调（见 CodexMCPServer），所以这里只负责：
-/// 起进程 → 开 thread → 发 turn → 把流式事件翻成 UI 回调 → turn 结束返回最终文本。
+/// Codex 内核适配层。
+///
+/// 分工（和上一版最大的区别）：
+///   · 进程与 thread 的生命周期 → `CodexRuntime`（常驻，全 App 一份）
+///   · 本类只做协议翻译：把 Models 的 `messages` 变成一轮 prompt，把事件变成 UI 回调
+///
+/// 旧版每个请求 `CodexEngine(config:)` 都新建 RPC + 新进程 + 新 thread，于是：
+///   · 每轮 1~3s 冷启动
+///   · 上下文每轮清零（`send` 只取最后一条 user 文本，thread 又是新的）
+/// 现在这两件事都不存在了。
 final class CodexEngine: ChatEngine {
     var onAuthCorrected: ((String) -> Void)?
     var currentReasoningLevel: Int = 0
     private(set) var isStreamingInFlight = false
 
-    /// 审批策略：nil = 自动通过；返回 nil 表示拒绝
-    var approvalHandler: ((_ method: String, _ params: [String: Any]) -> [String: Any]?)?
+    /// 会话标识：同一会话复用同一个 codex thread（上下文连续）
+    var conversationKey: String = "default"
+
+    /// 工具卡回调（显示用；工具已由 Codex 通过 dynamicTools 跑完，不要再执行）
+    var onToolCard: ((CodexToolCard) -> Void)?
 
     private let config: ModelConfig
-    private let rpc = CodexRPC()
-    private let queue = DispatchQueue(label: "codex.engine")
-    private var threadID: String?
-    private var assistantText = ""
-    private var thinkingText = ""
+    private var handle: CodexTurnHandle?
     private var completion: ((Result<ChatResult, Error>) -> Void)?
 
     init(config: ModelConfig) {
         self.config = config
-        wire()
     }
-
-    deinit { rpc.stop() }
 
     // MARK: - ChatEngine
 
@@ -40,181 +43,119 @@ final class CodexEngine: ChatEngine {
             completion(.failure(CodexRPCError(code: -2, message: "上一轮还没结束")))
             return
         }
-
         isStreamingInFlight = true
-        assistantText = ""
-        thinkingText = ""
         self.completion = completion
-        self.deltaSink = onDelta
-        self.thinkingSink = onThinking
-        self.statusSink = onStatus
-        self.extraSink = onCompacted
 
-        let prompt = Self.lastUserText(in: messages)
-        onStatus?("Codex 启动中…")
+        // token 统计：begin 用真实 history 估输入（Codex 有真 usage 时会覆盖）
+        UsageRecorder.shared.begin(messages: messages)
 
-        queue.async { [weak self] in
-            guard let self else { return }
-            do {
-                try self.ensureRunning()
-                if let id = self.threadID {
-                    self.startTurn(threadID: id, prompt: prompt, onStatus: onStatus)
-                } else {
-                    onStatus?("创建会话…")
-                    self.rpc.request("thread/start", params: self.threadStartParams()) { [weak self] result in
-                        guard let self else { return }
-                        switch result {
-                        case .failure(let error):
-                            self.finish(.failure(error))
-                        case .success(let value):
-                            let dict = value as? [String: Any] ?? [:]
-                            let thread = dict["thread"] as? [String: Any]
-                            let id = (thread?["id"] as? String) ?? (dict["threadId"] as? String)
-                            guard let id else {
-                                self.finish(.failure(CodexRPCError(code: -3, message: "thread/start 未返回 id")))
-                                return
-                            }
-                            self.threadID = id
-                            self.startTurn(threadID: id, prompt: prompt, onStatus: onStatus)
-                        }
-                    }
+        let instructions = Self.systemPrompt(from: messages)
+        let known = CodexThreadStore.shared.threadId(for: conversationKey) != nil
+        let prompt = Self.buildPrompt(from: messages, replayHistory: !known)
+        let images = messages.last(where: { $0.role == "user" })?.imageDataURLs ?? []
+
+        let turn = CodexRuntime.shared.submit(
+            conversationKey: conversationKey,
+            prompt: prompt,
+            instructions: instructions,
+            images: images,
+            config: config,
+            onStatus: onStatus,
+            onDelta: onDelta,
+            onThinking: onThinking,
+            onToolCard: { [weak self] card in
+                self?.onToolCard?(card)
+            },
+            completion: { [weak self] result in
+                guard let self else { return }
+                self.isStreamingInFlight = false
+                self.handle = nil
+                let cb = self.completion
+                self.completion = nil
+                switch result {
+                case .success(let payload):
+                    cb?(.success(.text(payload.text, thinking: payload.thinking)))
+                case .failure(let error):
+                    cb?(.failure(error))
                 }
-            } catch {
-                self.finish(.failure(error))
-            }
+            })
+
+        handle = turn
+        if turn == nil {
+            isStreamingInFlight = false
+            self.completion = nil
         }
     }
 
     func cancel() {
-        if let id = threadID {
-            rpc.request("turn/interrupt", params: ["threadId": id])
-        }
-        finish(.failure(CodexRPCError(code: -4, message: "已取消")))
-    }
-
-    // MARK: - 内部
-
-    private func ensureRunning() throws {
-        if rpc.isRunning { return }
-        guard let binary = CodexKernel.binaryPath else {
-            throw CodexRPCError(code: -5, message: "找不到 codex 运行时，请先在设置里安装")
-        }
-        CodexKernel.ensureConfig()
-        var env = ProcessInfo.processInfo.environment
-        env["CODEX_HOME"] = CodexKernel.homePath
-        env["HOME"] = CodexKernel.homePath
-        try rpc.start(binary: binary, environment: env)
-    }
-
-    private func startTurn(threadID: String, prompt: String, onStatus: ((String) -> Void)?) {
-        onStatus?("思考中…")
-        let input: [[String: Any]] = [["type": "text", "text": prompt]]
-        rpc.request("turn/start", params: ["threadId": threadID, "input": input]) { [weak self] result in
-            if case .failure(let error) = result { self?.finish(.failure(error)) }
+        if let handle { CodexRuntime.shared.cancel(handle) }
+        if isStreamingInFlight {
+            isStreamingInFlight = false
+            let cb = completion
+            completion = nil
+            cb?(.failure(CodexRPCError(code: -4, message: "已取消")))
         }
     }
 
-    private func wire() {
-        rpc.onLog = { line in NSLog("[codex] %@", line) }
+    // MARK: - prompt 组装
 
-        rpc.onNotification = { [weak self] method, params in
-            guard let self else { return }
-            switch method {
-            case "item/agentMessage/delta":
-                guard let delta = params["delta"] as? String else { return }
-                self.assistantText += delta
-                DispatchQueue.main.async { self.deltaSink?(delta) }
+    /// system 消息 = 系统提示词 / 开发者指令 / 工具目录 / 环境快照
+    static func systemPrompt(from messages: [ChatMessage]) -> String? {
+        let blocks = messages.filter { $0.role == "system" }
+            .map { $0.content.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !blocks.isEmpty else { return nil }
+        return blocks.joined(separator: "\n\n")
+    }
 
-            case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
-                guard let delta = params["delta"] as? String else { return }
-                self.thinkingText += delta
-                DispatchQueue.main.async { self.thinkingSink?(delta) }
+    static func lastUserText(in messages: [ChatMessage]) -> String {
+        messages.last(where: { $0.role == "user" })?.content ?? ""
+    }
 
-            case "item/started", "item/completed":
-                // 工具卡片：命令 / MCP 工具调用 / 文件改动都走这里，先以状态行呈现
-                if let item = params["item"] as? [String: Any] {
-                    let label = Self.describe(item)
-                    let prefix = method == "item/completed" ? "✓ " : "▶ "
-                    DispatchQueue.main.async { self.statusSink?(prefix + label) }
-                }
+    /// 新建 thread 时，把最近几轮压成一段文字一起带过去——
+    /// 这样"换会话 / 清了 thread 缓存 / 首次升级"都不会把已有讨论丢失。
+    static func buildPrompt(from messages: [ChatMessage], replayHistory: Bool) -> String {
+        let userText = lastUserText(in: messages)
+        guard replayHistory else { return userText }
 
-            case "turn/completed":
-                let thinking = self.thinkingText.isEmpty ? nil : self.thinkingText
-                self.finish(.success(.text(self.assistantText, thinking: thinking)))
-
-            case "error":
-                let message = (params["message"] as? String) ?? "Codex 运行错误"
-                self.finish(.failure(CodexRPCError(code: -6, message: message)))
-
+        var lines: [String] = []
+        for msg in messages.suffix(24) {
+            switch msg.role {
+            case "user":
+                lines.append("User: " + trim(msg.content, 400))
+            case "assistant":
+                let text = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { lines.append("Assistant: " + trim(text, 400)) }
+            case "tool":
+                let name = msg.toolName ?? "tool"
+                lines.append("Tool[\(name)]: " + trim(msg.content, 200))
             default:
                 break
             }
         }
-
-        rpc.onServerRequest = { [weak self] id, method, params in
-            guard let self else { return [:] }
-            if method == "item/tool/call" {
-                self.handleDynamicToolCall(id: id, params: params)
-                return nil      // 异步回包
-            }
-            if let handler = self.approvalHandler { return handler(method, params) }
-            // 默认：全部放行（个人研究用途；正式版应接 UI 确认框）
-            switch method {
-            case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
-                return ["decision": "approved"]
-            default:
-                return [:]
-            }
+        // 最后一条 user 已经在正文里，避免重复
+        if let last = lines.last, last.hasPrefix("User:"), last.contains(trim(userText, 400)) {
+            lines.removeLast()
         }
+        guard !lines.isEmpty else { return userText }
+        return """
+        [This conversation has earlier turns. Continue it with the transcript below as context.]
+        \(lines.joined(separator: "\n"))
+
+        [Current user message]
+        \(userText)
+        """
     }
 
-    private var deltaSink: ((String) -> Void)?
-    private var thinkingSink: ((String) -> Void)?
-    private var statusSink: ((String) -> Void)?
-    private var extraSink: ((String) -> Void)?
-
-    private func finish(_ result: Result<ChatResult, Error>) {
-        isStreamingInFlight = false
-        let callback = completion
-        completion = nil
-        DispatchQueue.main.async { callback?(result) }
-    }
-
-    static func lastUserText(in messages: [ChatMessage]) -> String {
-        let userMessages = messages.filter { $0.role == "user" }
-        return userMessages.last?.content ?? ""
-    }
-
-    static func describe(_ item: [String: Any]) -> String {
-        let type = (item["type"] as? String) ?? "item"
-        switch type {
-        case "commandExecution":
-            let cmd = (item["command"] as? String) ?? ""
-            let short = cmd.count > 80 ? String(cmd.prefix(80)) + "…" : cmd
-            if let code = item["exitCode"] as? Int { return "命令 \(short) → \(code)" }
-            return "命令 \(short)"
-        case "mcpToolCall":
-            let server = (item["server"] as? String) ?? "mcp"
-            let tool = (item["tool"] as? String) ?? ""
-            return "工具 \(server).\(tool)"
-        case "fileChange": return "文件改动"
-        case "reasoning":  return "推理"
-        case "agentMessage": return "回复"
-        default: return type
-        }
+    private static func trim(_ text: String, _ limit: Int) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+        return flat.count > limit ? String(flat.prefix(limit)) + "…" : flat
     }
 }
 
 // MARK: - 动态工具（进程内，不经 MCP/子进程）
 
 extension CodexEngine {
-    func threadStartParams() -> [String: Any] {
-        var params: [String: Any] = ["cwd": NSHomeDirectory()]
-        let specs = Self.dynamicToolSpecs()
-        if !specs.isEmpty { params["dynamicTools"] = specs }
-        return params
-    }
-
     static func sanitize(_ name: String) -> String {
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
         return String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
@@ -230,7 +171,7 @@ extension CodexEngine {
         "injection.list", "injection.status", "injection.enable", "injection.disable",
         "ipa.inspect", "app.decrypt", "app.entitlements",
         "ocr.image", "reminder", "location.get",
-        "shell.exec"   // 先用它做兜底；确认 Codex 自带 shell 在 iOS 可用后删掉
+        "shell.exec"   // Codex 自带 shell 在 iOS 沙盒里不一定可用，先留着兜底
     ] }
 
     /// Documents/trollcodex-tools.txt：每行一个工具名；文件不存在=用默认表，空文件=全部工具
@@ -245,6 +186,10 @@ extension CodexEngine {
         return lines.isEmpty ? nil : lines
     }
 
+    private static let specLock = NSLock()
+    /// 清洗后的名字 → 原始工具名（防撞名：撞了就给后者加序号）
+    private static var nameMap: [String: String] = [:]
+
     static func dynamicToolSpecs() -> [[String: Any]] {
         let allow = toolAllowlist.map(Set.init)
         let defs = ToolRegistry.shared.enabledDefinitions.filter { def in
@@ -253,54 +198,54 @@ extension CodexEngine {
             guard let allow else { return true }
             return allow.contains(def.name)
         }
-        return defs.map { def in
+
+        specLock.lock()
+        nameMap.removeAll()
+        var specs: [[String: Any]] = []
+        for def in defs {
+            var api = sanitize(def.name)
+            if nameMap[api] != nil {
+                var index = 2
+                while nameMap["\(api)_\(index)"] != nil { index += 1 }
+                api = "\(api)_\(index)"
+            }
+            nameMap[api] = def.name
+
             var props: [String: Any] = [:]
             for (key, desc) in def.parameters {
-                props[key] = ["type": "string", "description": desc]
+                props[key] = ["type": paramType(for: key, desc: desc), "description": desc]
             }
-            return [
+            specs.append([
                 "type": "function",
-                "name": sanitize(def.name),
+                "name": api,
                 "description": def.summary,
                 "inputSchema": ["type": "object", "properties": props]
-            ]
+            ])
         }
+        specLock.unlock()
+        return specs
     }
 
     static func originalToolName(_ sanitized: String) -> String {
-        for def in ToolRegistry.shared.enabledDefinitions where sanitize(def.name) == sanitized {
-            return def.name
-        }
-        return sanitized
+        specLock.lock()
+        let hit = nameMap[sanitized]
+        specLock.unlock()
+        return hit ?? sanitized
     }
 
-    /// item/tool/call -> 在 App 进程内直接跑 ToolRegistry，结果回给 Codex
-    func handleDynamicToolCall(id: Int, params: [String: Any]) {
-        let invoked = (params["tool"] as? String) ?? ""
-        let name = Self.originalToolName(invoked)
-        let args = (params["arguments"] as? [String: Any]) ?? [:]
-        DispatchQueue.main.async { self.statusSink?("▶ 工具 \(name)") }
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let response: [String: Any]
-            do {
-                let out = try ToolRegistry.shared.dispatch(name: name, params: args)
-                let text = Self.jsonText(out)
-                response = ["contentItems": [["type": "inputText", "text": text]], "success": true]
-            } catch {
-                response = ["contentItems": [["type": "inputText", "text": "ERROR: \(error.localizedDescription)"]], "success": false]
-            }
-            DispatchQueue.main.async { self?.statusSink?("✓ 工具 \(name)") }
-            self?.rpc.reply(id: id, result: response)
+    /// 参数类型：不再一律 string（旧版全部当字符串，模型爱传错结构）
+    static func paramType(for key: String, desc: String) -> String {
+        let name = key.lowercased()
+        let text = desc.lowercased()
+        if text.contains("true/false") || text.contains("布尔") || name.hasPrefix("is_") || name.hasPrefix("enable") {
+            return "boolean"
         }
-    }
-
-    static func jsonText(_ object: [String: Any]) -> String {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object),
-              let text = String(data: data, encoding: .utf8) else {
-            return String(describing: object)
+        if text.contains("数组") || text.contains("列表") || text.contains("array") || name.hasSuffix("s") && text.contains("list of") {
+            return "array"
         }
-        return text
+        let numeric = ["count", "limit", "timeout", "pid", "port", "seconds", "lines", "depth", "size", "index", "duration", "level"]
+        if numeric.contains(where: { name.contains($0) }) { return "number" }
+        if name.contains("path") || name.contains("url") || name.contains("id") || name.contains("name") { return "string" }
+        return "string"
     }
 }

@@ -1443,6 +1443,39 @@ final class ConversationStore: ObservableObject {
         return sinceForeground >= 0 && sinceForeground < 5
     }
 
+    /// TrollCodex：把 Codex 的工具事件画成真工具卡（只显示，不执行）。
+    /// 旧版只有一个"▶ 工具 xxx"状态行，于是 toolName / 轨迹 / 会话记忆的 tools 字段全空。
+    func applyCodexToolCard(_ card: CodexToolCard) {
+        guard let ci = activeConvIndex else { return }
+        let convId = conversations[ci].id
+
+        if let existing = conversations[ci].messages.firstIndex(where: {
+            $0.role == "tool" && $0.toolCallId == card.id
+        }) {
+            let msgId = conversations[ci].messages[existing].id
+            _ = updateMessage(in: convId, msgId: msgId) { msg in
+                if let result = card.result, !result.isEmpty {
+                    msg.content = result
+                } else if msg.content.isEmpty {
+                    msg.content = "执行中…"
+                }
+                msg.isRunning = (card.status == .running)
+                msg.isError = (card.status == .failed)
+                if let d = card.duration { msg.toolDuration = d }
+            }
+            return
+        }
+
+        var msg = ChatMessage(role: "tool", content: card.result ?? "执行中…")
+        msg.toolCallId = card.id
+        msg.toolName = card.name
+        msg.toolArgs = card.args
+        msg.isRunning = (card.status == .running)
+        msg.isError = (card.status == .failed)
+        msg.toolDuration = card.duration
+        _ = appendToCurrent(msg)
+    }
+
     private func scheduleRetryOnForeground(config: ModelConfig, tools: [[String: Any]]?, disclosed: [String], depth: Int, reasoningLevel: Int, personaPrompt: String? = nil) {
         retriedBackgroundOnce = true
         // v7.4.0-fix73b：若失败时已在前台（或刚回前台 5s 内）→ willEnterForeground 事件已经发出，
@@ -1673,6 +1706,14 @@ final class ConversationStore: ObservableObject {
             self.statusText = L10n.t("status_auth_corrected", method)
         }
         client.currentReasoningLevel = reasoningLevel
+        // TrollCodex：会话键（同一会话复用同一个 codex thread，上下文才连续）
+        // + 工具卡回调（工具由 Codex 自己执行，卡片只做展示，绝不在这里二次执行）
+        if let codex = client as? CodexEngine {
+            codex.conversationKey = (self.requestSessionId ?? self.activeConvId ?? self.selectedId)?.uuidString ?? "default"
+            codex.onToolCard = { [weak self] card in
+                DispatchQueue.main.async { self?.applyCodexToolCard(card) }
+            }
+        }
         currentClient = client
         let prepared = messagesForAPI(budget: config.effectiveContextTokens)
         // v7.1.109-peers：硬停不适配 Agent 长任务（OpenMinis 是消费级对话可卡住，

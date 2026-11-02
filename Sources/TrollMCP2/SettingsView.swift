@@ -624,6 +624,23 @@ struct UpdateView: View {
                 }
             }
             
+            Section(header: Text("Codex 内核")) {
+                NavigationLink(destination: CodexRuntimeStatusView()) {
+                    HStack {
+                        Image(systemName: "cpu")
+                            .foregroundColor(CodexKernel.binaryPath == nil ? .orange : .green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(CodexKernel.binaryPath == nil ? "未找到 codex 运行时" : "codex 运行时可用")
+                            Text(CodexKernel.binaryPath ?? "点此查看安装方式")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+            }
+
             Section(header: Text(L10n.t("i18n_242"))) {
                 Button(action: {
                     mirrorsText = UpdateManager.shared.mirrorsText
