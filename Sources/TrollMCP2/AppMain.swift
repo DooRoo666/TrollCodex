@@ -17,7 +17,9 @@ struct TrollAgentApp {
     static func main() {
         let args = CommandLine.arguments
         fputs("[appmain] entry args=\(args)\n", stderr)
-        if args.contains("-hud") {
+        if args.contains("--codex-mcp") {
+            CodexMCPServer.run()   // TrollCodex: MCP stdio server, 由 codex app-server 拉起
+        } else if args.contains("-hud") {
             HUDMainStart()        // 进悬浮模式（内部 runloop，不返回）
         } else if args.contains("-exit") {
             HUDExit()             // 关闭悬浮（读 pid 杀）

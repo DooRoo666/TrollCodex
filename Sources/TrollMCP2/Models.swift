@@ -1050,7 +1050,7 @@ final class ConversationStore: ObservableObject {
     private var retryObserver: NSObjectProtocol?
     private var retriedNetworkOnce = false
     /// v2.9.13：当前正在进行的 OpenAIClient (支持取消）
-    private var currentClient: OpenAIClient?
+    private var currentClient: ChatEngine?
     /// v2.9.53：当前流式输出的消息 ID (逐字显示时跟踪，done后更新或清理）
     /// v3.4.5：改为 internal（ChatView 用它标记打字机效果的消息）
     var streamingMessageId: UUID?
@@ -1659,7 +1659,9 @@ final class ConversationStore: ObservableObject {
             }
         }
 
-        let client = OpenAIClient(config)
+        let client: ChatEngine = CodexKernel.isEnabled
+                ? CodexEngine(config: config)
+                : OpenAIClient(config)
         // v7.2.3-fix6：鉴权智能试探成功 → 持久化纠正（对齐 OpenMinis BYOK 智能匹配）
         client.onAuthCorrected = { [weak self] method in
             guard let self = self else { return }
