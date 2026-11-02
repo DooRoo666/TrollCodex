@@ -55,7 +55,10 @@ final class CodexProcess {
         var outPipe = [Int32](repeating: 0, count: 2)
         guard pipe(&inPipe) == 0, pipe(&outPipe) == 0 else { throw CodexProcessError.pipeFailed }
 
-        var actions = posix_spawn_file_actions_t()
+        // Darwin 上这两个类型是 pointer typedef（不是有 init() 的 struct），
+        // 必须声明成可选指针再传 &x 给 init/setflags（CI 实测：`posix_spawn_file_actions_t()` 直接报
+        // "missing argument for parameter #1 in call"）
+        var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         posix_spawn_file_actions_adddup2(&actions, inPipe[0], STDIN_FILENO)
         posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDOUT_FILENO)
@@ -64,7 +67,7 @@ final class CodexProcess {
         posix_spawn_file_actions_addclose(&actions, outPipe[0])
 
         // 信号默认动作/屏蔽集：避免父进程的忽略态被子进程继承（codex 自己会装 handler）
-        var attr = posix_spawnattr_t()
+        var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
 

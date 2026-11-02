@@ -407,16 +407,18 @@ enum ControlSemantics {
     /// 语义指纹：role + 子树文本 + 自身文本 + 最近 2 层父语义。
     /// 同一控件（同 role/文本/父链）每次读树得到相同指纹 → 可安全"锁"复用；树变后查不到 → 安全失效。
     static func semanticFingerprint(_ node: [String: Any], ancestors: [[String: Any]]) -> String {
-        let role = role(of: node) ?? ""
+        // 注意：这里不能写 `let role = role(of:)`——局部变量 named role 会遮蔽同名静态方法，
+        // 下一行的 `role(of: p)` 就变成 "cannot call value of non-function type 'String'"（CI 实测）
+        let selfRole = Self.role(of: node) ?? ""
         let subtree = subtreeText(node)
         let own = nodeText(node)
         var parents: [String] = []
         for p in ancestors.prefix(2) {
-            let pr = role(of: p) ?? ""
+            let pr = Self.role(of: p) ?? ""
             let pt = nodeText(p)
             parents.append("\(pr):\(pt.prefix(12))")
         }
-        let sig = role + "|" + subtree + "|" + own + "|" + parents.joined(separator: ">")
+        let sig = selfRole + "|" + subtree + "|" + own + "|" + parents.joined(separator: ">")
         return String(format: "fp_%016llx", fnv1a(sig))
     }
 
