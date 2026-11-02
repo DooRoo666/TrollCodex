@@ -99,9 +99,10 @@ final class CodexEngine: ChatEngine {
         guard let binary = CodexKernel.binaryPath else {
             throw CodexRPCError(code: -5, message: "找不到 codex 运行时，请先在设置里安装")
         }
+        CodexKernel.ensureConfig()
         var env = ProcessInfo.processInfo.environment
-        env["CODEX_HOME"] = CodexKernel.codexHome
-        env["HOME"] = CodexKernel.codexHome
+        env["CODEX_HOME"] = CodexKernel.homePath
+        env["HOME"] = CodexKernel.homePath
         try rpc.start(binary: binary, environment: env)
     }
 

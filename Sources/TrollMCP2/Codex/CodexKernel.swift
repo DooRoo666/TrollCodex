@@ -78,3 +78,43 @@ enum CodexAvailability {
         return .ready(path)
     }
 }
+
+extension CodexKernel {
+    /// 首次运行时写最小 config.toml：把本 App 注册成 Codex 的 MCP 工具服务端。
+    /// 这样 Codex 拉起的 stdout 事件里，工具调用会以 McpToolCallThreadItem 出现。
+    static func ensureConfig() {
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: homePath, withIntermediateDirectories: true)
+        migrateAuthIfNeeded()
+        let path = homePath + "/config.toml"
+        guard !fm.fileExists(atPath: path) else { return }
+        let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
+        let exe = Bundle.main.bundlePath + "/" + exeName
+        let text = """
+        # TrollCodex 自动生成
+        [mcp_servers.trollagent]
+        command = "\(exe)"
+        args = ["--codex-mcp"]
+        startup_timeout_sec = 30.0
+        """
+        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
+extension CodexKernel {
+    /// 复用设备上已有的 Codex 登录态，免二次登录。
+    static func migrateAuthIfNeeded() {
+        let fm = FileManager.default
+        let dst = homePath + "/auth.json"
+        guard !fm.fileExists(atPath: dst) else { return }
+        let candidates = [
+            "/var/mobile/.codex/auth.json",
+            "/private/var/mobile/.codex/auth.json",
+            NSHomeDirectory() + "/.codex/auth.json"
+        ]
+        for src in candidates where fm.fileExists(atPath: src) {
+            try? fm.copyItem(atPath: src, toPath: dst)
+            if fm.fileExists(atPath: dst) { return }
+        }
+    }
+}
