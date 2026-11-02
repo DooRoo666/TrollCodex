@@ -102,3 +102,14 @@ Codex 的 `thread/start` 支持 `dynamicTools`（`{type:"function",name,descript
 - 每行一个工具名（按 `ToolRegistry` 原名，如 `control.screenshot`），`#` 开头忽略
 
 改完重启 App 生效，不用重编译。
+
+
+## 唯一内核（2026-11-02 定稿）
+
+- 主对话：`ModelStore` 里固定 `CodexEngine`，**没有任何 OpenAI 回退分支**
+- 上下文压缩：`CodexOneShot.complete` —— 起一个独立 thread 跑摘要，不碰 OpenAI
+- 子代理：`subagent*` 工具从 dynamicTools 里过滤掉（Codex 原生能拆解任务）
+- `CodexKernel.isEnabled` 恒为 `true`
+- `OpenAIClient` / `BackgroundLLM` / `SubAgentTool` 仍在工程里但已无调用路径，可后续删
+
+若设备上没有 codex 运行时，对话会直接报错而不是悄悄切回 OpenAI。
