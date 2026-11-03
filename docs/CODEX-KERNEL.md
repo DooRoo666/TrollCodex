@@ -24,11 +24,15 @@ UI 不变，工具不变：Codex 通过 MCP 反向调用 TrollAgent 自己的 `T
 
 | 文件 | 职责 |
 |---|---|
-| `CodexKernel.swift` | 开关（UserDefaults）、二进制路径发现、`ChatEngine` 协议 |
+| `CodexKernel.swift` | 运行时探测（含 +x 修复）、`CODEX_HOME`、`ChatEngine` 协议、登录态接管 |
 | `CodexProcess.swift` | `posix_spawn` + 管道 + 行读取（iOS 无 `Process`） |
 | `CodexRPC.swift` | 行分隔 JSON-RPC 客户端（请求/通知/服务端请求） |
-| `CodexEngine.swift` | 线程与回合管理、事件→UI 回调、取消 |
-| `CodexMCPServer.swift` | `--codex-mcp` 模式：把 ToolRegistry 暴露成 MCP 工具 |
+| `CodexRuntime.swift` | 常驻进程、thread 按会话持久化、turn 串行、看门狗、审批路由、usage |
+| `CodexEngine.swift` | `ChatEngine` 适配层：prompt 组装 / 事件→UI / 工具卡 |
+| `CodexToolBridge.swift` | **工具暴露唯一真源**：白名单、命名清洗、撞名、inputSchema（两条通道共用） |
+| `CodexApproval.swift` | 审批弹框（accept / acceptForSession / decline；120s 超时按 decline） |
+| `CodexMCPServer.swift` | `--codex-mcp`：同一批工具暴露给外部 MCP 客户端 |
+| `CodexRuntimeStatusView.swift` | 设置页：二进制 / 登录态 / 进程 / thread 数 |
 
 ## 开关
 

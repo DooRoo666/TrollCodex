@@ -1,18 +1,11 @@
 import Foundation
 
-/// 内核选择与运行时配置。
-/// 默认：检测到 codex 运行时就以 Codex 为内核；否则回退 OpenAIClient。
+/// 内核运行时配置。
+///
+/// Codex 是**唯一内核**：没有 OpenAI 回退分支，也没有开关（`isEnabled` 恒 true，只留给
+/// 旧的 `handoffActiveRequestToBackground` 判断用）。找不到运行时 = 直接报错，不静默降级。
 enum CodexKernel {
-    private static let defaultsKey = "trollcodex.kernel.enabled"
-
-    /// 免 UI 开关：Documents/trollcodex-kernel.txt 内容写 codex 即启用
-    static var flagFilePath: String { NSHomeDirectory() + "/Documents/trollcodex-kernel.txt" }
-
-    /// Codex 是唯一内核，没有 OpenAI 回退通道。
-    static var isEnabled: Bool {
-        get { true }
-        set { }
-    }
+    static var isEnabled: Bool { true }
 
     /// codex 可执行文件候选路径（按顺序探测）
     static var binaryCandidates: [String] {
@@ -30,7 +23,15 @@ enum CodexKernel {
     }
 
     static var binaryPath: String? {
-        binaryCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        let fm = FileManager.default
+        for candidate in binaryCandidates where fm.fileExists(atPath: candidate) {
+            // 安装/解包后可能丢可执行位（bundle 内文件不一定保留），这里补一次再判
+            if !fm.isExecutableFile(atPath: candidate) {
+                _ = chmod(candidate, 0o755)
+            }
+            if fm.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
     }
 
     /// CODEX_HOME：必须是 app 可写目录，不能给 /var/mobile（codex 会尝试建 sqlite 状态库）
@@ -41,11 +42,6 @@ enum CodexKernel {
         let home = base.appendingPathComponent("TrollCodexHome")
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         return home.path
-    }
-
-    static var statusDescription: String {
-        guard let bin = binaryPath else { return "未找到 codex 可执行文件" }
-        return "codex: \(bin)\nCODEX_HOME: \(homePath)"
     }
 }
 
@@ -67,18 +63,6 @@ protocol ChatEngine: AnyObject {
 }
 
 extension OpenAIClient: ChatEngine {}
-
-/// 便于 UI 层直接问“现在能不能用 Codex”
-enum CodexAvailability {
-    case ready(String)
-    case missingBinary
-    case missingRuntime
-
-    static func check() -> CodexAvailability {
-        guard let path = CodexKernel.binaryPath else { return .missingBinary }
-        return .ready(path)
-    }
-}
 
 extension CodexKernel {
     /// 首次运行时写最小 config.toml：把本 App 注册成 Codex 的 MCP 工具服务端。

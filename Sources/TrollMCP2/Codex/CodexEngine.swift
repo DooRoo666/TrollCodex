@@ -154,98 +154,30 @@ final class CodexEngine: ChatEngine {
 }
 
 // MARK: - 动态工具（进程内，不经 MCP/子进程）
+//
+// 实体在 CodexToolBridge（两条通道共用一份），这里只留运行时需要的两个入口。
 
 extension CodexEngine {
-    static func sanitize(_ name: String) -> String {
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
-        return String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
-    }
-
-    /// 默认只暴露"Codex 内置工具做不到"的设备能力；文件/命令/搜索交给 Codex 自己。
-    static var defaultToolNames: [String] { [
-        "device.info", "device.snapshot", "device.refresh_container",
-        "app.status", "app.launch", "app.stop", "app.install", "app.uninstall",
-        "control.screenshot", "control.tap_text", "control.tap_selector",
-        "control.type_text", "control.find",
-        "browser.navigate", "browser.snapshot", "browser.text", "browser.click",
-        "injection.list", "injection.status", "injection.enable", "injection.disable",
-        "ipa.inspect", "app.decrypt", "app.entitlements",
-        "ocr.image", "reminder", "location.get",
-        "shell.exec"   // Codex 自带 shell 在 iOS 沙盒里不一定可用，先留着兜底
-    ] }
-
-    /// Documents/trollcodex-tools.txt：每行一个工具名；文件不存在=用默认表，空文件=全部工具
-    static var toolAllowlist: [String]? {
-        let path = NSHomeDirectory() + "/Documents/trollcodex-tools.txt"
-        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
-            return defaultToolNames
-        }
-        let lines = raw.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        return lines.isEmpty ? nil : lines
-    }
-
-    private static let specLock = NSLock()
-    /// 清洗后的名字 → 原始工具名（防撞名：撞了就给后者加序号）
-    private static var nameMap: [String: String] = [:]
-
+    /// 交给 codex 的 function spec（名字已清洗、撞名已加后缀）
     static func dynamicToolSpecs() -> [[String: Any]] {
-        let allow = toolAllowlist.map(Set.init)
-        let defs = ToolRegistry.shared.enabledDefinitions.filter { def in
-            // 子代理已并入 Codex，不再作为独立工具暴露
-            if def.name.lowercased().hasPrefix("subagent") { return false }
-            guard let allow else { return true }
-            return allow.contains(def.name)
-        }
-
-        specLock.lock()
-        nameMap.removeAll()
-        var specs: [[String: Any]] = []
-        for def in defs {
-            var api = sanitize(def.name)
-            if nameMap[api] != nil {
-                var index = 2
-                while nameMap["\(api)_\(index)"] != nil { index += 1 }
-                api = "\(api)_\(index)"
-            }
-            nameMap[api] = def.name
-
-            var props: [String: Any] = [:]
-            for (key, desc) in def.parameters {
-                props[key] = ["type": paramType(for: key, desc: desc), "description": desc]
-            }
-            specs.append([
-                "type": "function",
-                "name": api,
-                "description": def.summary,
-                "inputSchema": ["type": "object", "properties": props]
-            ])
-        }
-        specLock.unlock()
-        return specs
+        CodexToolBridge.functionSpecs().specs
     }
 
+    /// item/tool/call 回调里把对外名字换回 ToolRegistry 的原始名
     static func originalToolName(_ sanitized: String) -> String {
-        specLock.lock()
-        let hit = nameMap[sanitized]
-        specLock.unlock()
-        return hit ?? sanitized
+        let map = CodexToolBridge.nameMap(for: CodexToolBridge.exposedDefinitions())
+        return CodexToolBridge.original(for: sanitized, map: map)
     }
 
-    /// 参数类型：不再一律 string（旧版全部当字符串，模型爱传错结构）
+    static func sanitize(_ name: String) -> String {
+        CodexToolBridge.sanitize(name)
+    }
+
+    static var defaultToolNames: [String] { CodexToolBridge.defaultToolNames }
+
+    static var toolAllowlist: [String]? { CodexToolBridge.allowlist }
+
     static func paramType(for key: String, desc: String) -> String {
-        let name = key.lowercased()
-        let text = desc.lowercased()
-        if text.contains("true/false") || text.contains("布尔") || name.hasPrefix("is_") || name.hasPrefix("enable") {
-            return "boolean"
-        }
-        if text.contains("数组") || text.contains("列表") || text.contains("array") || name.hasSuffix("s") && text.contains("list of") {
-            return "array"
-        }
-        let numeric = ["count", "limit", "timeout", "pid", "port", "seconds", "lines", "depth", "size", "index", "duration", "level"]
-        if numeric.contains(where: { name.contains($0) }) { return "number" }
-        if name.contains("path") || name.contains("url") || name.contains("id") || name.contains("name") { return "string" }
-        return "string"
+        CodexToolBridge.jsonType(name: key, desc: desc)
     }
 }

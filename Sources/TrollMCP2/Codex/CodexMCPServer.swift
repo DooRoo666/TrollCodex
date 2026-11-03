@@ -1,16 +1,22 @@
 import Foundation
 
-/// 把 TrollAgent 的工具注册表暴露成一个 stdio MCP server。
+/// 把工具注册表暴露成一个 stdio MCP server（给外部客户端用：VS Code / Obsidian / 自己的脚本）。
+///
 /// 启动：`TrollAgent --codex-mcp`
-/// Codex 侧配置（$CODEX_HOME/config.toml）：
-/// [mcp_servers.trollagent]
-/// command = "/var/containers/Bundle/Application/.../TrollAgent.app/TrollAgent"
-/// args = ["--codex-mcp"]
+/// 客户端配置（`$CODEX_HOME/config.toml`）：
+///     [mcp_servers.trollagent]
+///     command = "/var/containers/Bundle/Application/.../TrollAgent.app/TrollAgent"
+///     args = ["--codex-mcp"]
+///
+/// 注意：App 内部对话**不走这条**——codex 起进程内 dynamicTools 直连（少一个进程、少一串失败点）。
+/// 这条只为"外部客户端复用同一批工具"，默认关闭，由 `Documents/trollcodex-mcp.txt` 决定是否注册。
+///
+/// 工具集合/命名/schema 全部来自 `CodexToolBridge`，和 App 内通道严格一致。
 enum CodexMCPServer {
     static let protocolVersion = "2025-06-18"
 
     static func run() -> Never {
-        log("trollcodex-mcp ready")
+        log("trollcodex-mcp ready (pid \(ProcessInfo.processInfo.processIdentifier))")
         while let line = readLine(strippingNewline: false) {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
@@ -23,8 +29,12 @@ enum CodexMCPServer {
         }
         exit(0)
     }
+}
 
-    private static func handle(_ msg: [String: Any]) {
+// MARK: - 协议分发
+
+private extension CodexMCPServer {
+    static func handle(_ msg: [String: Any]) {
         let id = msg["id"]
         let method = msg["method"] as? String ?? ""
         let params = msg["params"] as? [String: Any] ?? [:]
@@ -34,86 +44,58 @@ enum CodexMCPServer {
             reply(id: id, result: [
                 "protocolVersion": protocolVersion,
                 "capabilities": ["tools": ["listChanged": false]],
-                "serverInfo": ["name": "trollagent", "version": "7.1"]
+                "serverInfo": ["name": "trollagent", "version": appVersion]
             ])
+
         case "notifications/initialized", "notifications/cancelled":
             break
+
         case "ping":
             reply(id: id, result: [:])
+
         case "tools/list":
             reply(id: id, result: ["tools": toolList()])
+
         case "tools/call":
             guard let name = params["name"] as? String else {
-                reply(id: id, error: [-32602, "missing tool name"])
+                reply(id: id, errorCode: -32602, message: "missing tool name")
                 return
             }
-            let args = params["arguments"] as? [String: Any] ?? [:]
-            reply(id: id, result: call(name: name, arguments: args))
+            let arguments = params["arguments"] as? [String: Any] ?? [:]
+            reply(id: id, result: call(name: name, arguments: arguments))
+
         default:
-            if id != nil {
-                reply(id: id, error: [-32601, "method not found: \(method)"])
-            }
+            if id != nil { reply(id: id, errorCode: -32601, message: "method not found: \(method)") }
         }
     }
-}
 
-private extension CodexMCPServer {
+    static var appVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
+    }
+
     static func toolList() -> [[String: Any]] {
-        ToolRegistry.shared.enabledDefinitions.map { def in
-            [
-                "name": mcpName(def.name),
+        let defs = CodexToolBridge.exposedDefinitions()
+        let map = CodexToolBridge.nameMap(for: defs)
+        return map.sorted { $0.key < $1.key }.compactMap { api, originalName in
+            guard let def = defs.first(where: { $0.name == originalName }) else { return nil }
+            return [
+                "name": api,
                 "description": def.summary,
-                "inputSchema": schema(for: def.parameters)
+                "inputSchema": CodexToolBridge.inputSchema(params: def.parameters)
             ]
         }
     }
 
     static func call(name: String, arguments: [String: Any]) -> [String: Any] {
-        let original = originalName(name)
+        let defs = CodexToolBridge.exposedDefinitions()
+        let map = CodexToolBridge.nameMap(for: defs)
+        let original = CodexToolBridge.original(for: name, map: map)
         do {
             let result = try ToolRegistry.shared.dispatch(name: original, params: arguments)
             return ["content": [["type": "text", "text": jsonString(result)]], "isError": false]
         } catch {
             return ["content": [["type": "text", "text": "ERROR: \(error.localizedDescription)"]], "isError": true]
         }
-    }
-
-    /// MCP 工具名只允许 [A-Za-z0-9_-]，TrollAgent 里有 shell.exec 这类点号名
-    static func mcpName(_ raw: String) -> String {
-        String(raw.map { ch -> Character in
-            if ch.isLetter || ch.isNumber || ch == "_" || ch == "-" { return ch }
-            return "_"
-        })
-    }
-
-    static func originalName(_ mcp: String) -> String {
-        for def in ToolRegistry.shared.enabledDefinitions where mcpName(def.name) == mcp {
-            return def.name
-        }
-        return mcp
-    }
-
-    static func schema(for params: [String: String]) -> [String: Any] {
-        var properties: [String: Any] = [:]
-        var required: [String] = []
-        for (key, desc) in params {
-            properties[key] = ["type": jsonType(name: key, desc: desc), "description": desc]
-            let lower = desc.lowercased()
-            if desc.contains("必填") || lower.contains("required") { required.append(key) }
-        }
-        var result: [String: Any] = ["type": "object", "properties": properties]
-        if !required.isEmpty { result["required"] = required }
-        return result
-    }
-
-    static func jsonType(name: String, desc: String) -> String {
-        let lower = name.lowercased() + " " + desc.lowercased()
-        if lower.contains("bool") || lower.contains("true/false") { return "boolean" }
-        if lower.contains("数组") || lower.contains("array") || lower.contains("list of") { return "array" }
-        if ["count", "limit", "timeout", "pid", "port", "seconds", "lines"].contains(where: { name.lowercased().contains($0) }) {
-            return "number"
-        }
-        return "string"
     }
 
     static func jsonString(_ object: Any) -> String {
@@ -125,15 +107,13 @@ private extension CodexMCPServer {
     }
 
     static func reply(id: Any?, result: [String: Any]) {
-        guard let id = id else { return }
+        guard let id else { return }
         send(["jsonrpc": "2.0", "id": id, "result": result])
     }
 
-    static func reply(id: Any?, error: [Any]) {
-        guard let id = id else { return }
-        let code = error.count > 0 ? error[0] : -32603
-        let message = error.count > 1 ? error[1] : "error"
-        send(["jsonrpc": "2.0", "id": id, "error": ["code": code, "message": message]])
+    static func reply(id: Any?, errorCode: Int, message: String) {
+        guard let id else { return }
+        send(["jsonrpc": "2.0", "id": id, "error": ["code": errorCode, "message": message]])
     }
 
     static func send(_ object: [String: Any]) {
