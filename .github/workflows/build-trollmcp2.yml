@@ -929,18 +929,29 @@ jobs:
           fi
           echo "deb: $(du -h "$DEB" | cut -f1)"
           mkdir -p x && cd x
-          ar x "../$DEB" || { echo "!!! ar 失败"; exit 0; }
-          ls -l
-          # data.tar.zst 需要 zstd；runner 上没有就装
-          command -v zstd >/dev/null || brew install zstd >/dev/null 2>&1 || true
-          if [ -f data.tar.zst ]; then
-            zstd -d -c data.tar.zst > data.tar 2>/dev/null || true
+          # 关键：macOS 的 ar(llvm-ar) 解这个 deb 会静默产出空目录（实测），
+          # 改用 bsdtar 读 ar 容器；再不行用 python3 兜底拆 ar。
+          tar xf "../$DEB" 2>/dev/null || true
+          if [ ! -f data.tar.zst ] && [ ! -f data.tar.xz ] && [ ! -f data.tar.gz ]; then
+            echo "bsdtar 没拆出成员，用 python 兜底"
+            python3 -c "
+import sys
+d=open(sys.argv[1],'rb').read()
+assert d[:8]==b'!<arch>\n'
+p=8
+while p+60<=len(d):
+    h=d[p:p+60]; n=h[:16].decode('utf-8','replace').strip().rstrip('/'); s=int(h[48:58].decode().strip() or 0)
+    open(n,'wb').write(d[p+60:p+60+s]); p+=60+s+(s%2)
+" "../$DEB" || true
           fi
+          ls -l
+          command -v zstd >/dev/null || brew install zstd >/dev/null 2>&1 || true
+          if [ -f data.tar.zst ]; then zstd -df data.tar.zst -o data.tar || true; fi
           for t in data.tar data.tar.xz data.tar.gz; do
             [ -f "$t" ] && { tar xf "$t" && echo "extracted $t"; }
           done
           echo "--- 解包结果 ---"
-          find . -maxdepth 6 -type f -size +1M | head -20
+          find . -maxdepth 7 -type f -size +1M | head -20
 
       - name: Collect codex binary
         run: |
