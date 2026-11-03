@@ -7,18 +7,13 @@ import Foundation
 enum CodexKernel {
     static var isEnabled: Bool { true }
 
-    /// codex 可执行文件候选路径（按顺序探测）
+    /// codex 可执行文件位置（唯一来源：随包内置）
+    /// 顺序：调试用环境变量 → 包内 CodexRuntime/codex → Documents/codex/codex（手工投放口）
     static var binaryCandidates: [String] {
         var list: [String] = []
         if let env = ProcessInfo.processInfo.environment["CODEX_BIN"], !env.isEmpty { list.append(env) }
         list.append(Bundle.main.bundlePath + "/CodexRuntime/codex")
-        list.append(Bundle.main.bundlePath + "/Frameworks/codex")
-        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            list.append(support.appendingPathComponent("NanoCodex/runtimes/codex/var/jb/usr/libexec/codex/codex").path)
-            list.append(support.appendingPathComponent("TrollCodex/codex").path)
-        }
-        list.append("/var/jb/usr/libexec/codex/codex")
-        list.append("/var/mobile/Documents/codex/codex")
+        list.append(NSHomeDirectory() + "/Documents/codex/codex")
         return list
     }
 
@@ -65,30 +60,26 @@ protocol ChatEngine: AnyObject {
 extension OpenAIClient: ChatEngine {}
 
 extension CodexKernel {
-    /// 运行时在 dynamicTools 被服务端拒绝时置 true —— 改走 MCP 通道，保证工具仍然可用
-    static var forceMCPRegistration = false
-
     /// 首次运行时写最小 config.toml：把本 App 注册成 Codex 的 MCP 工具服务端。
-    /// 通道默认关闭；`Documents/trollcodex-mcp.txt` 存在、或运行时判定 dynamicTools 不可用时才注册。
+    /// 仅当 `Documents/trollcodex-mcp.txt` 存在时注册——那是"给外部客户端复用工具"的可选功能，
+    /// **不是内核通道的降级**：内核工具走 dynamicTools，与这里无关。
     static var mcpOptInPath: String { NSHomeDirectory() + "/Documents/trollcodex-mcp.txt" }
 
-    static func ensureConfig(force: Bool = false) {
+    static func ensureConfig() {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: homePath, withIntermediateDirectories: true)
         migrateAuthIfNeeded()
 
         let path = homePath + "/config.toml"
-        let wanted = force || forceMCPRegistration || fm.fileExists(atPath: mcpOptInPath)
         let existing = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
 
-        guard wanted else {
-            // 关掉时只清自己写过的那份，不动用户手写配置
+        guard fm.fileExists(atPath: mcpOptInPath) else {
             if existing.contains("# TrollCodex 自动生成") {
                 try? fm.removeItem(atPath: path)
             }
             return
         }
-        if existing.contains("[mcp_servers.trollagent]") { return }   // 已注册
+        if existing.contains("[mcp_servers.trollagent]") { return }
 
         let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
         let exe = Bundle.main.bundlePath + "/" + exeName
@@ -100,8 +91,7 @@ extension CodexKernel {
         startup_timeout_sec = 30.0
 
         """
-        let merged = block + existing
-        try? merged.write(toFile: path, atomically: true, encoding: .utf8)
+        try? (block + existing).write(toFile: path, atomically: true, encoding: .utf8)
     }
 }
 
