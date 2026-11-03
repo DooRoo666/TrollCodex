@@ -19,6 +19,9 @@ jobs:
     # v4.4.6-fix3u: needs native-nmap（continue-on-error job，失败不阻塞出包）
     # v4.4.8-fix3w: needs native-llvm（LLVM 单工具 + jtool2；下载 continue-on-error，失败不出这些工具但出包）
     needs: [native-python, native-wheels, native-nmap, native-llvm, native-node, native-codex]
+    # 前置 job 被平台取消/排队卡住/失败时也照常出包：各 Download 步骤都是 continue-on-error，
+    # 缺件就降级（缺 node 就不带 node），绝不让整包因为一个前置 job 被 skip。
+    if: always()
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -902,18 +905,12 @@ jobs:
           path: native-node-out/*
           if-no-files-found: warn
 
-
-  # v7.1.290：把 codex（Rust）交叉编译成 aarch64-apple-ios 可执行文件，随包内置。
-  # 目的：用户装完 App 直接就能用 codex 内核，不需要另装 NanoCode、也不需要手工投放二进制。
-  # v7.1.291：codex 运行时改为「取现成 iOS arm64 二进制」，不再跑 Cargo 交叉编译。
-  # 来源：susu123oss/CodexApp-Runtime（公开的 codex iOS 二进制分发仓库，Apache-2.0 上游 openai/codex）。
-  # v7.1.292：取现成 iOS arm64 codex 二进制（不再 Cargo 交叉编译，20 分钟 -> ~2 分钟）
-  # 来源 susu123oss/CodexApp-Runtime（公开分发 openai/codex 的 iOS 构建，上游 Apache-2.0）
-  # deb 实测结构：data.tar.zst -> ./var/jb/usr/libexec/codex/codex (235 MB) + usr/bin/codex (52 KB 启动器)
-  # 失败只意味"不内置运行时"，绝不阻塞出包。
+  # v7.1.296：codex 运行时改为"取现成 iOS arm64 二进制"，并且跑在 ubuntu 上——
+  # 只需解一个 deb，不需要 macOS（把 macOS 并发位让给真正需要编译的 job，避免排队卡死）。
+  # 来源 susu123oss/CodexApp-Runtime（公开分发 openai/codex 的 iOS 构建，上游 Apache-2.0）。
   native-codex:
-    runs-on: macos-latest
-    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Fetch prebuilt codex (iphoneos-arm64 deb)
         run: |
@@ -921,61 +918,33 @@ jobs:
           mkdir -p rt && cd rt
           BASE="https://github.com/susu123oss/CodexApp-Runtime/releases/download/runtime-codex-v0.162.1-4"
           DEB="wiki.qaq.codex_0.162.1-4_iphoneos-arm64.deb"
-          curl -fsSL -o "$DEB" "$BASE/$DEB" || { echo "!!! 下载失败"; exit 0; }
+          curl -fsSL --retry 3 -o "$DEB" "$BASE/$DEB" || { echo "!!! 下载失败"; exit 0; }
           curl -fsSL -o SHA256SUMS "$BASE/SHA256SUMS" || true
           if [ -s SHA256SUMS ]; then
             grep -F "$DEB" SHA256SUMS > one.sum || true
-            [ -s one.sum ] && { shasum -a 256 -c one.sum || echo "!!! sha256 不符（继续）"; }
+            [ -s one.sum ] && { sha256sum -c one.sum || echo "!!! sha256 不匹配（继续）"; }
           fi
           echo "deb: $(du -h "$DEB" | cut -f1)"
-          mkdir -p x && cd x
-          # 关键：macOS 的 ar(llvm-ar) 解这个 deb 会静默产出空目录（实测），
-          # 改用 bsdtar 读 ar 容器；再不行用 python3 兜底拆 ar。
-          tar xf "../$DEB" 2>/dev/null || true
-          if [ ! -f data.tar.zst ] && [ ! -f data.tar.xz ] && [ ! -f data.tar.gz ]; then
-            echo "bsdtar 没拆出成员，改用 7z 兜底"
-            command -v 7z >/dev/null || brew install p7zip >/dev/null 2>&1 || true
-            7z x -y "../$DEB" >/dev/null 2>&1 || true
-          fi
-          ls -l
-          command -v zstd >/dev/null || brew install zstd >/dev/null 2>&1 || true
-          if [ -f data.tar.zst ]; then zstd -df data.tar.zst -o data.tar || true; fi
-          for t in data.tar data.tar.xz data.tar.gz; do
-            [ -f "$t" ] && { tar xf "$t" && echo "extracted $t"; }
-          done
-          echo "--- 解包结果 ---"
-          find . -maxdepth 7 -type f -size +1M | head -20
+          dpkg-deb -x "$DEB" x || { echo "!!! dpkg-deb 解包失败"; exit 0; }
+          find x -type f -name codex -exec ls -lh {} \;
 
       - name: Collect codex binary
         run: |
           set -uo pipefail
           mkdir -p native-codex-out
-          # 诊断落盘：API 拿不到 job 日志时，靠这个产物看现场
-          {
-            echo "== zstd =="; command -v zstd || echo "no zstd"
-            echo "== rt =="; ls -la rt 2>&1 | head -30
-            echo "== rt/x =="; ls -la rt/x 2>&1 | head -30
-            echo "== tree =="; find rt -maxdepth 8 2>/dev/null | head -120
-            echo "== big =="; find rt -type f -size +1M 2>/dev/null | head -40
-          } > native-codex-out/diag.txt 2>&1 || true
           BIN=""
-          for c in rt/x/var/jb/usr/libexec/codex/codex rt/x/usr/libexec/codex/codex \
-                   rt/x/var/jb/usr/bin/codex rt/x/usr/bin/codex; do
-            if [ -f "$c" ]; then BIN="$c"; break; fi
+          for c in rt/x/var/jb/usr/libexec/codex/codex rt/x/usr/libexec/codex/codex; do
+            [ -f "$c" ] && { BIN="$c"; break; }
           done
-          if [ -z "$BIN" ]; then
-            BIN=$(find rt/x -type f -name codex 2>/dev/null | sort -r | head -1)
-          fi
-          if [ -n "$BIN" ] && [ -f "$BIN" ]; then
+          if [ -n "$BIN" ]; then
             cp "$BIN" native-codex-out/codex
             chmod +x native-codex-out/codex
-            echo ">>> 取自: $BIN" >> native-codex-out/diag.txt
-            echo ">>> 大小: $(du -h native-codex-out/codex | cut -f1)" >> native-codex-out/diag.txt
-            echo ">>> 类型: $(file native-codex-out/codex | head -c 160)" >> native-codex-out/diag.txt
+            echo ">>> 取自 $BIN"
+            ls -lh native-codex-out/codex
+            sha256sum native-codex-out/codex
           else
-            echo "!!! 未找到 codex 二进制" >> native-codex-out/diag.txt
+            echo "!!! 未找到 codex 二进制"
           fi
-          cat native-codex-out/diag.txt | tail -30
 
       - name: Upload native-codex
         uses: actions/upload-artifact@v4
