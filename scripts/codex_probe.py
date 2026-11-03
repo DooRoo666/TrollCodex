@@ -80,6 +80,25 @@ class Server:
             with self.lock:
                 self.lines.append(line)
 
+    def dump_notifications(self, label):
+        """把非响应行（通知/服务端请求）原样打出来——用于观察 error 的真实结构"""
+        with self.lock:
+            snapshot = list(self.lines)
+        interesting = []
+        for line in snapshot:
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(msg, dict) and "id" not in msg:
+                interesting.append(msg)
+        if not interesting:
+            return
+        say("      [%s] 收到通知 %d 条（最多显示 5 条原始 JSON）:" % (label, len(interesting)))
+        for msg in interesting[:5]:
+            text = json.dumps(msg, ensure_ascii=False)
+            say("        " + (text[:600] + ("…" if len(text) > 600 else "")))
+
     def _take(self, rid):
         with self.lock:
             for i, line in enumerate(self.lines):
@@ -218,6 +237,9 @@ def main():
                                 % str(turn["error"].get("message", ""))[:120])
             else:
                 record_pass("turn/start 接受 text + text_elements")
+            # 关键：把 turn 期间的 error 通知原样打出来，App 里那条 -7 就是它
+            time.sleep(3)
+            srv.dump_notifications("turn/start 之后")
 
         say("")
         if failures:

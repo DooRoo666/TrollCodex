@@ -410,8 +410,25 @@ final class CodexRuntime {
             finish(turn, .success((text: turn.text, thinking: thinking)))
 
         case "error":
-            let message = (params["message"] as? String) ?? (params["error"] as? String) ?? "Codex 运行错误"
-            finish(turn, .failure(CodexRPCError(code: -7, message: message)))
+            // 官方 ErrorNotification: { error: {message, codexErrorInfo, additionalDetails}, willRetry, threadId, turnId }
+            let payload = params["error"] as? [String: Any]
+            let rawMessage = (payload?["message"] as? String)
+                ?? (params["message"] as? String)
+                ?? "Codex 返回错误"
+            let hint = Self.hint(for: payload?["codexErrorInfo"])
+            let extra = (payload?["additionalDetails"] as? String)
+                .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            let composed = ([rawMessage, hint, extra].compactMap { $0 }).joined(separator: " · ")
+            let willRetry = (params["willRetry"] as? Bool) ?? false
+
+            if willRetry {
+                // 服务端自己在重试，别把这一轮判死
+                turn.lastActivityAt = Date()
+                DispatchQueue.main.async { turn.onStatus?("⚠️ \(composed)（codex 重试中）") }
+                return
+            }
+            NetworkLog.shared.log("[codex] error: \(composed)")
+            finish(turn, .failure(CodexRPCError(code: -7, message: composed)))
 
         default:
             break
@@ -498,6 +515,49 @@ final class CodexRuntime {
         // codex 各版本命名不一致：新的是 item/*/requestApproval，
         // 老的是 execCommandApproval / applyPatchApproval —— 统一按关键字兜住
         method.lowercased().contains("approval")
+    }
+
+    /// 把 codexErrorInfo 翻译成用户能动手的一句话。
+    /// 官方取值：unauthorized / rateLimitExceeded / usageLimitExceeded / contextWindowExceeded /
+    ///          httpConnectionFailed / serverOverloaded / badRequest / sandboxError / other …
+    static func hint(for info: Any?) -> String? {
+        guard let info else { return nil }
+        var key = ""
+        var httpStatus: Int?
+
+        if let s = info as? String {
+            key = s
+        } else if let dict = info as? [String: Any], let first = dict.first {
+            key = first.key
+            if let inner = first.value as? [String: Any], let code = inner["httpStatusCode"] {
+                httpStatus = code as? Int
+            }
+        }
+        guard !key.isEmpty else { return nil }
+
+        var text: String
+        switch key {
+        case "unauthorized":
+            text = "未登录或登录态失效：去设置 →「Codex 内核」配置 API Key / auth.json"
+        case "rateLimitExceeded":
+            text = "被限流，稍等再试"
+        case "usageLimitExceeded":
+            text = "用量额度已用尽"
+        case "contextWindowExceeded":
+            text = "上下文超限，建议新建会话"
+        case "httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected":
+            text = "网络连接失败"
+        case "serverOverloaded":
+            text = "服务端繁忙"
+        case "badRequest":
+            text = "请求被拒（参数或模型不支持）"
+        case "sandboxError":
+            text = "沙箱错误（iOS 上无系统沙箱，通常是命令被执行环境拒绝）"
+        default:
+            text = "错误类型 \(key)"
+        }
+        if let code = httpStatus { text += "（HTTP \(code)）" }
+        return text
     }
 
     // MARK: 动态工具（进程内直跑 ToolRegistry）

@@ -65,12 +65,14 @@ jobs:
             echo "没有可执行文件，跳过探针（见 fetch 诊断产物）"
             exit 1
           fi
-          CODEX_BIN="$(cat /tmp/codex_bin_path)" python3 scripts/codex_probe.py
+          CODEX_BIN="$(cat /tmp/codex_bin_path)" python3 scripts/codex_probe.py 2>&1 | tee probe/probe.log
 
       - name: Upload diagnostics (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: codex-probe-diagnostics
-          path: probe/fetch.log
+          path: |
+            probe/fetch.log
+            probe/probe.log
           if-no-files-found: warn
