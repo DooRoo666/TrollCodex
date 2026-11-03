@@ -72,26 +72,46 @@ extension CodexKernel {
 
         let path = homePath + "/config.toml"
         let existing = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let ours = existing.isEmpty || existing.contains("# TrollCodex 自动生成")
+        guard ours else { return }   // 用户手写过配置就不动它
 
-        guard fm.fileExists(atPath: mcpOptInPath) else {
-            if existing.contains("# TrollCodex 自动生成") {
-                try? fm.removeItem(atPath: path)
-            }
+        var blocks: [String] = []
+
+        // 模型来自 设置 → 模型：provider 以 OpenAI 兼容方式接进 codex
+        if let cfg = activeConfig, !cfg.baseURL.isEmpty, !cfg.model.isEmpty {
+            blocks.append("""
+            # TrollCodex 自动生成——模型来源：设置 → 模型（改设置后自动重建）
+            model = "\(cfg.model)"
+            model_provider = "trollagent"
+
+            [model_providers.trollagent]
+            name = "\(cfg.provider) (TrollCodex)"
+            base_url = "\(cfg.baseURL)"
+            env_key = "OPENAI_API_KEY"
+            wire_api = "\(wireAPI)"
+            """)
+        }
+
+        // 外部 MCP 客户端复用工具（可选，与内核通道无关）
+        if fm.fileExists(atPath: mcpOptInPath) {
+            let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
+            let exe = Bundle.main.bundlePath + "/" + exeName
+            blocks.append("""
+            [mcp_servers.trollagent]
+            command = "\(exe)"
+            args = ["--codex-mcp"]
+            startup_timeout_sec = 30.0
+            """)
+        }
+
+        if blocks.isEmpty {
+            if !existing.isEmpty { try? fm.removeItem(atPath: path) }
             return
         }
-        if existing.contains("[mcp_servers.trollagent]") { return }
-
-        let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
-        let exe = Bundle.main.bundlePath + "/" + exeName
-        let block = """
-        # TrollCodex 自动生成
-        [mcp_servers.trollagent]
-        command = "\(exe)"
-        args = ["--codex-mcp"]
-        startup_timeout_sec = 30.0
-
-        """
-        try? (block + existing).write(toFile: path, atomically: true, encoding: .utf8)
+        let text = blocks.joined(separator: "\n\n") + "\n"
+        if text != existing {
+            try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        }
     }
 }
 
@@ -102,42 +122,74 @@ extension CodexKernel {
     ///   1) Documents/codex-auth.json  原样当 $CODEX_HOME/auth.json（从 NanoCode 或电脑上拷过来的）
     ///   2) Documents/codex-apikey.txt 内容为 sk-... 的 API Key
     ///   3) 设备上已有的 /var/mobile/.codex/auth.json（NanoCode 装过的痕迹）
+    /// 设置里当前选中的模型——**唯一来源**（设置 → 模型）。
+    /// 内核不在 App 里另开一套模型配置：用户在设置里选什么，codex 就用什么。
+    static var activeConfig: ModelConfig? {
+        let store = ModelStore.shared
+        if let def = store.defaultConfig { return def }
+        return store.configs.first(where: { $0.isDefault }) ?? store.configs.first
+    }
+
+    /// codex 的 wire_api：Responses 协议走 "responses"，其余（chat/completions、中转站）走 "chat"
+    static var wireAPI: String {
+        guard let cfg = activeConfig else { return "chat" }
+        return cfg.apiProtocol.lowercased().contains("responses") ? "responses" : "chat"
+    }
+
     static var apiKeyPath: String { NSHomeDirectory() + "/Documents/codex-apikey.txt" }
     static var authInboxPath: String { NSHomeDirectory() + "/Documents/codex-auth.json" }
 
+    /// API Key：优先用设置里的，其次才是手工投放的 txt
     static var apiKey: String? {
+        if let key = activeConfig?.apiKey.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            return key
+        }
         guard let raw = try? String(contentsOfFile: apiKeyPath, encoding: .utf8) else { return nil }
         let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard key.count > 20 else { return nil }
-        return key
+        return key.count > 20 ? key : nil
     }
 
-    /// 设置页展示用的一句话状态
+    /// 设置页展示用
     static var authStatusDescription: String {
+        if let cfg = activeConfig, !cfg.apiKey.isEmpty { return "已就绪（设置 → 模型：\(cfg.name)）" }
         let fm = FileManager.default
         if fm.fileExists(atPath: homePath + "/auth.json") { return "已就绪（auth.json）" }
-        if apiKey != nil { return "已就绪（API Key）" }
+        if apiKey != nil { return "已就绪（API Key 文件）" }
         return "缺少登录态"
+    }
+
+    static var modelDescription: String {
+        guard let cfg = activeConfig else { return "未选择模型" }
+        let host = URL(string: cfg.baseURL)?.host ?? cfg.baseURL
+        return "\(cfg.model) @ \(host)"
     }
 
     static func migrateAuthIfNeeded() {
         let fm = FileManager.default
         let dst = homePath + "/auth.json"
+
+        // 1) 设置 → 模型里的 Key 是权威来源：变了就同步过去
+        if let cfg = activeConfig, !cfg.apiKey.isEmpty {
+            let json = "{\"OPENAI_API_KEY\": \"\(cfg.apiKey)\"}"
+            let current = (try? String(contentsOfFile: dst, encoding: .utf8)) ?? ""
+            if current != json {
+                try? json.write(toFile: dst, atomically: true, encoding: .utf8)
+            }
+            return
+        }
         guard !fm.fileExists(atPath: dst) else { return }
+        // 2) 手工投放的 auth.json / 设备上已有的 codex 登录态
         let candidates = [
             authInboxPath,
             "/var/mobile/.codex/auth.json",
-            "/private/var/mobile/.codex/auth.json",
             NSHomeDirectory() + "/.codex/auth.json"
         ]
         for path in candidates where fm.fileExists(atPath: path) {
             try? fm.copyItem(atPath: path, toPath: dst)
             if fm.fileExists(atPath: dst) { return }
         }
-        // 只有 API Key 时，按 codex 认的格式写一份最小 auth.json
         if let key = apiKey {
-            let json = "{\"OPENAI_API_KEY\": \"\(key)\"}"
-            try? json.write(toFile: dst, atomically: true, encoding: .utf8)
+            try? "{\"OPENAI_API_KEY\": \"\(key)\"}".write(toFile: dst, atomically: true, encoding: .utf8)
         }
     }
 }

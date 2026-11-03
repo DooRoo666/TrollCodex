@@ -33,6 +33,8 @@ struct CodexRuntimeStatusView: View {
                     color: binaryPath == nil ? .orange : .green)
                 row("登录态", CodexKernel.authStatusDescription,
                     color: CodexKernel.authStatusDescription.hasPrefix("已就绪") ? .green : .orange)
+                row("模型", CodexKernel.modelDescription,
+                    color: CodexKernel.activeConfig == nil ? .orange : .primary)
                 row("进程", processAlive ? "运行中" : "未启动（发第一条消息时启动）",
                     color: processAlive ? .green : .secondary)
                 if let p = binaryPath {

@@ -214,6 +214,9 @@ final class CodexRuntime {
     private func beginTurn(_ turn: CodexTurn) {
         turn.onStatus?("Codex 就绪 · 处理中…")
 
+        // 每轮同步一次：设置里换模型/换 Key 后，下一轮就按新配置走（config.toml + auth.json）
+        CodexKernel.ensureConfig()
+
         if let existing = CodexThreadStore.shared.threadId(for: turn.key) {
             turn.threadId = existing
             startTurn(turn, threadId: existing)
@@ -296,6 +299,11 @@ final class CodexRuntime {
             params["baseInstructions"] = trimmed
             params["developerInstructions"] = trimmed
         }
+        // 模型同样来自 设置 → 模型（与 config.toml 的 model_provider 配套）
+        if let cfg = CodexKernel.activeConfig, !cfg.model.isEmpty {
+            params["model"] = cfg.model
+            params["modelProvider"] = "trollagent"
+        }
 
         rpc.request("thread/start", params: params) { result in
             switch result {
@@ -329,7 +337,9 @@ final class CodexRuntime {
         }
         input.append(["type": "text", "text": turn.prompt, "text_elements": []])
 
-        let params: [String: Any] = ["threadId": threadId, "input": input]
+        var params: [String: Any] = ["threadId": threadId, "input": input]
+        // 每轮带上当前选中的模型：设置里换模型后不必重建 thread，下一轮即生效
+        if let cfg = CodexKernel.activeConfig, !cfg.model.isEmpty { params["model"] = cfg.model }
         turn.startedAt = Date()
         turn.lastActivityAt = Date()
 
