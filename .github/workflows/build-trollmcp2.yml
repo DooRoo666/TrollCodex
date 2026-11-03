@@ -18,7 +18,7 @@ jobs:
     # 等它确保 python artifact 就位，build 才能真正集成（此前并行时 download 拿不到→python 被跳过）
     # v4.4.6-fix3u: needs native-nmap（continue-on-error job，失败不阻塞出包）
     # v4.4.8-fix3w: needs native-llvm（LLVM 单工具 + jtool2；下载 continue-on-error，失败不出这些工具但出包）
-    needs: [native-python, native-wheels, native-nmap, native-llvm, native-node]
+    needs: [native-python, native-wheels, native-nmap, native-llvm, native-node, native-codex]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -276,6 +276,14 @@ jobs:
         with:
           name: native-node
           path: native-node-out
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download native codex runtime (if ready)
+        uses: actions/download-artifact@v4
+        with:
+          name: native-codex
+          path: native-codex-out
           merge-multiple: true
         continue-on-error: true
 
@@ -894,3 +902,49 @@ jobs:
           path: native-node-out/*
           if-no-files-found: warn
 
+
+  # v7.1.290：把 codex（Rust）交叉编译成 aarch64-apple-ios 可执行文件，随包内置。
+  # 目的：用户装完 App 直接就能用 codex 内核，不需要另装 NanoCode、也不需要手工投放二进制。
+  # 全程 continue-on-error：编不出来只退化回"外部运行时探测"，绝不阻塞出包。
+  native-codex:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    continue-on-error: true
+    steps:
+      - name: Fetch codex source
+        run: |
+          set -uo pipefail
+          git clone --depth 1 https://github.com/openai/codex.git src \
+            || { echo "!!! codex 源码拉取失败——跳过内置运行时"; exit 0; }
+
+      - name: Build codex for iOS arm64
+        run: |
+          set -uo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup target add aarch64-apple-ios || true
+          cd src/codex-rs 2>/dev/null || cd src
+          # 关键：编译失败也不让本 step 变红——本 job 是 needs 依赖，红了会连带跳过出包
+          cargo build --release --target aarch64-apple-ios 2>&1 | tail -n 80 || true
+          echo ">>> cargo build done (rc ignored)"
+
+      - name: Collect codex binary
+        run: |
+          set -uo pipefail
+          mkdir -p native-codex-out
+          for p in src/target/aarch64-apple-ios/release/codex \
+                   src/codex-rs/target/aarch64-apple-ios/release/codex; do
+            if [ -f "$p" ]; then
+              cp "$p" native-codex-out/codex
+              chmod +x native-codex-out/codex
+              echo ">>> codex: $(file native-codex-out/codex | head -c 140)"
+              break
+            fi
+          done
+          ls -l native-codex-out || true
+
+      - name: Upload native-codex
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-codex
+          path: native-codex-out/codex
+          if-no-files-found: warn

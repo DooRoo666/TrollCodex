@@ -29,11 +29,15 @@ struct CodexRuntimeStatusView: View {
     var body: some View {
         List {
             Section(header: Text("运行时")) {
-                row("状态", binaryPath == nil ? "未找到" : "已就绪",
+                row("二进制", binaryPath == nil ? "未找到" : "已就绪",
                     color: binaryPath == nil ? .orange : .green)
+                row("登录态", CodexKernel.authStatusDescription,
+                    color: CodexKernel.authStatusDescription.hasPrefix("已就绪") ? .green : .orange)
                 row("进程", processAlive ? "运行中" : "未启动（发第一条消息时启动）",
                     color: processAlive ? .green : .secondary)
-                row("二进制", binaryPath ?? "—")
+                if let p = binaryPath {
+                    row("路径", p)
+                }
                 row("CODEX_HOME", homePath)
                 Button {
                     refresh()
@@ -42,17 +46,17 @@ struct CodexRuntimeStatusView: View {
                 }
             }
 
-            if binaryPath == nil {
-                Section(header: Text("怎么装")) {
-                    Text("任选其一：")
+            if binaryPath == nil || !CodexKernel.authStatusDescription.hasPrefix("已就绪") {
+                Section(header: Text("怎么补齐")) {
+                    Text("运行时：本包已内置（CodexRuntime/codex）。若显示「未找到」，说明内置产物没生成——把 iOS 版 codex 放到 Documents/codex/codex（chmod 755）即可。")
                         .font(.footnote)
-                    Text("1) 装一次 NanoCodex，本 App 会自动复用它自带运行时，并拷 auth.json（免二次登录）。")
+                    Text("登录态（二选一）：")
                         .font(.footnote)
-                    Text("2) 把 iOS 版 codex 放到 App 容器的 Documents/codex/codex，权限 0755。")
+                    Text("① Documents/codex-apikey.txt 里写一行 sk-... 的 API Key；")
                         .font(.footnote)
-                    Text("3) 越狱设备可直接用 /var/jb/usr/libexec/codex/codex。")
+                    Text("② 把电脑 / NanoCode 的 auth.json 改名为 Documents/codex-auth.json 放进来。")
                         .font(.footnote)
-                    Text("放好后回到本页点「重新检测」。")
+                    Text("放好后回本页点「重新检测」，再发一条消息。")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }

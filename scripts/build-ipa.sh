@@ -484,6 +484,27 @@ else
     echo ">>> python-ios xcframework not present — native Python skipped" >&2
 fi
 
+# v7.1.290：内置 codex 运行时（CI 里 native-codex job 交叉编译的 aarch64-apple-ios 可执行文件）
+# 目标：用户装完 App 就能用 codex 内核，不需要再装 NanoCode、也不需要手工投放二进制。
+# 找不到产物时退化为"外部运行时探测"（CodexKernel.binaryCandidates 里那串路径），不阻塞出包。
+if [ -f "native-codex-out/codex" ]; then
+    mkdir -p "$APP/CodexRuntime"
+    cp "native-codex-out/codex" "$APP/CodexRuntime/codex"
+    chmod +x "$APP/CodexRuntime/codex"
+    # iOS 上子进程必须自带签名才能 exec，走和 bin/ 工具同一套 entitlements
+    if command -v ldid >/dev/null 2>&1; then
+        if [ -f "Support/bin-entitlements.plist" ]; then
+            ldid -S"Support/bin-entitlements.plist" "$APP/CodexRuntime/codex" 2>/dev/null \
+                || ldid -S "$APP/CodexRuntime/codex" 2>/dev/null || true
+        else
+            ldid -S "$APP/CodexRuntime/codex" 2>/dev/null || true
+        fi
+    fi
+    echo ">>> bundled codex runtime ($(du -h "$APP/CodexRuntime/codex" | cut -f1))"
+else
+    echo ">>> codex runtime 未就绪（native-codex 产物缺失）——退化为外部运行时探测" >&2
+fi
+
 # 把特权 entitlements 签入主二进制，TrollStore 安装时才能继承 no-sandbox/no-container/task_for_pid 等权限
 # v2.9.64：强制用 ldid 签名（TrollStore 官方明确要求 ldid -S 格式；codesign ad-hoc 签名格式不同，可能导致 entitlements 不被保留）
 if [ -f "Support/TrollAgent.entitlements" ]; then

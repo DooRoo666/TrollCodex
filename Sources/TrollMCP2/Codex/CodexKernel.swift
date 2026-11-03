@@ -116,18 +116,47 @@ extension CodexKernel {
 
 extension CodexKernel {
     /// 复用设备上已有的 Codex 登录态，免二次登录。
+    ///
+    /// v7.1.290：内置运行时之后，登录态成为唯一外部依赖。三种投喂方式（按优先级）：
+    ///   1) Documents/codex-auth.json  原样当 $CODEX_HOME/auth.json（从 NanoCode 或电脑上拷过来的）
+    ///   2) Documents/codex-apikey.txt 内容为 sk-... 的 API Key
+    ///   3) 设备上已有的 /var/mobile/.codex/auth.json（NanoCode 装过的痕迹）
+    static var apiKeyPath: String { NSHomeDirectory() + "/Documents/codex-apikey.txt" }
+    static var authInboxPath: String { NSHomeDirectory() + "/Documents/codex-auth.json" }
+
+    static var apiKey: String? {
+        guard let raw = try? String(contentsOfFile: apiKeyPath, encoding: .utf8) else { return nil }
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard key.count > 20 else { return nil }
+        return key
+    }
+
+    /// 设置页展示用的一句话状态
+    static var authStatusDescription: String {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: homePath + "/auth.json") { return "已就绪（auth.json）" }
+        if apiKey != nil { return "已就绪（API Key）" }
+        return "缺少登录态"
+    }
+
     static func migrateAuthIfNeeded() {
         let fm = FileManager.default
         let dst = homePath + "/auth.json"
         guard !fm.fileExists(atPath: dst) else { return }
         let candidates = [
+            authInboxPath,
             "/var/mobile/.codex/auth.json",
             "/private/var/mobile/.codex/auth.json",
             NSHomeDirectory() + "/.codex/auth.json"
         ]
-        for src in candidates where fm.fileExists(atPath: src) {
-            try? fm.copyItem(atPath: src, toPath: dst)
+        for path in candidates where fm.fileExists(atPath: path) {
+            try? fm.copyItem(atPath: path, toPath: dst)
             if fm.fileExists(atPath: dst) { return }
+        }
+        // 只有 API Key 时，按 codex 认的格式写一份最小 auth.json
+        if let key = apiKey {
+            let json = "{\"OPENAI_API_KEY\": \"\(key)\"}"
+            try? json.write(toFile: dst, atomically: true, encoding: .utf8)
         }
     }
 }

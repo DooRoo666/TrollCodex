@@ -231,6 +231,10 @@ final class CodexRuntime {
         env["CODEX_HOME"] = CodexKernel.homePath
         env["HOME"] = CodexKernel.homePath
         env["PATH"] = (env["PATH"] ?? "") + ":/usr/bin:/bin"
+        // v7.1.290：有 API Key 就同时给环境变量（部分 codex 版本只读 env，不读 auth.json）
+        if let key = CodexKernel.apiKey {
+            env["OPENAI_API_KEY"] = key
+        }
         wire()
         try rpc.start(binary: binary, environment: env)
         NetworkLog.shared.log("[codex] app-server started: \(binary)")
