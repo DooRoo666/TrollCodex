@@ -114,6 +114,8 @@ final class CodexRuntime {
     private let workQueue = DispatchQueue(label: "trollcodex.runtime", qos: .userInitiated)
     private let lock = NSLock()
     private var current: CodexTurn?
+    /// initialize 只做一次；进程重启后清掉
+    private var handshakeDone = false
 
     /// 空闲超时：一轮 turn 最长等多久（Codex 长任务放量，30 分钟）
     var turnTimeout: TimeInterval = 1800
@@ -196,6 +198,15 @@ final class CodexRuntime {
             return
         }
 
+        // 官方协议第一步是 initialize：0.162.1 的 thread/start.dynamicTools 被
+        // #[experimental] 门控，不声明 experimentalApi 的话 dynamicTools 会被静默忽略
+        // （表现：codex 能聊，但永远不调我们的设备工具）。版本差异大，失败也不阻断。
+        ensureHandshake {
+            self.beginTurn(turn)
+        }
+    }
+
+    private func beginTurn(_ turn: CodexTurn) {
         turn.onStatus?("Codex 就绪 · 处理中…")
 
         if let existing = CodexThreadStore.shared.threadId(for: turn.key) {
@@ -221,12 +232,44 @@ final class CodexRuntime {
         }
     }
 
+    /// initialize 握手（只做一次；进程重启后重做）
+    private func ensureHandshake(completion: @escaping () -> Void) {
+        if handshakeDone {
+            completion()
+            return
+        }
+        let rich: [String: Any] = [
+            "clientInfo": ["name": "trollcodex", "version": "7.1.290"],
+            "experimentalApi": true
+        ]
+        let finish: (Result<Any, Error>) -> Void = { [weak self] result in
+            guard let self else { return }
+            if case .failure(let error) = result {
+                NetworkLog.shared.log("[codex] initialize 失败（继续尝试）：\(error.localizedDescription)")
+            } else {
+                self.handshakeDone = true
+                // 部分版本要求跟一条 initialized 通知
+                self.rpc.notify("initialized", params: [:])
+            }
+            completion()
+        }
+        rpc.request("initialize", params: rich) { [weak self] result in
+            if case .failure = result {
+                // 老版本认最小参数：再试一次
+                self?.rpc.request("initialize", params: [:], completion: finish)
+            } else {
+                finish(result)
+            }
+        }
+    }
+
     private func ensureRunning() throws {
         if rpc.isRunning { return }
         guard let binary = CodexKernel.binaryPath else {
             throw CodexRPCError(code: -5, message: "找不到 codex 运行时：请在设置里安装，或用 NanoCodex 复用现有运行时")
         }
         CodexKernel.ensureConfig()
+        handshakeDone = false
         var env = ProcessInfo.processInfo.environment
         env["CODEX_HOME"] = CodexKernel.homePath
         env["HOME"] = CodexKernel.homePath
@@ -292,7 +335,7 @@ final class CodexRuntime {
         for image in turn.images.prefix(4) where CodexRuntime.imagesEnabled {
             input.append(["type": "image", "url": image])
         }
-        input.append(["type": "text", "text": turn.prompt])
+        input.append(["type": "text", "text": turn.prompt, "text_elements": []])
 
         let params: [String: Any] = ["threadId": threadId, "input": input]
         turn.startedAt = Date()
@@ -304,7 +347,8 @@ final class CodexRuntime {
                 // 图片项不被接受 → 去掉图片重试一次（纯文本永远可用）
                 if !turn.images.isEmpty, CodexRuntime.isParamRejection(error) || error.localizedDescription.contains("input") {
                     var textOnly = params
-                    textOnly["input"] = [["type": "text", "text": turn.prompt]]
+                    // 官方 UserInput 文本项必带 text_elements（0.162.1 schema 里是必填）
+                    textOnly["input"] = [["type": "text", "text": turn.prompt, "text_elements": []]]
                     self.rpc.request("turn/start", params: textOnly) { retry in
                         if case .failure(let e) = retry { self.finish(turn, .failure(e)) }
                     }
@@ -455,7 +499,7 @@ final class CodexRuntime {
 
         if CodexRuntime.isApprovalMethod(method) && turn?.approvalMode == .denyAll {
             // 一次性任务（压缩/摘要）：不写文件、不弹框，直接拒
-            return ["decision": CodexApprovalDecision.denied.rawValue]
+            return ["decision": CodexApprovalDecision.decline.rawValue]
         }
 
         if CodexRuntime.isApprovalMethod(method) {

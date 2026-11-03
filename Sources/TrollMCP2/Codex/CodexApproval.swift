@@ -47,10 +47,15 @@ struct CodexApprovalRequest {
     }
 }
 
+/// 官方协议（app-server 的 CommandExecutionApprovalDecision / FileChangeApprovalDecision）
+/// 只认这四个值：accept / acceptForSession / decline / cancel。
+/// 旧实现回的 approved/denied 是错的——codex 会直接判为非法响应，命令既不执行也不报错。
 enum CodexApprovalDecision: String {
-    case approved
-    case approvedForSession = "approved_for_session"
-    case denied
+    case accept
+    case acceptForSession
+    case decline
+    /// 这次拒绝并让 codex 中止当前动作（超时/关闭时用）
+    case cancel
 }
 
 final class CodexApprovalCenter {
@@ -91,15 +96,15 @@ final class CodexApprovalCenter {
     func resolve(_ request: CodexApprovalRequest,
                  completion: @escaping (CodexApprovalDecision) -> Void) {
         if isSessionApprovedAll {
-            completion(.approved)
+            completion(.accept)
             return
         }
         switch policy {
         case .auto:
-            completion(.approved)
+            completion(.accept)
             return
         case .deny:
-            completion(.denied)
+            completion(.decline)
             return
         case .ask:
             break
@@ -107,7 +112,7 @@ final class CodexApprovalCenter {
 
         DispatchQueue.main.async { [weak self] in
             guard let self, let host = Self.topViewController() else {
-                completion(.denied)
+                completion(.decline)
                 return
             }
             self.lock.lock()
@@ -120,14 +125,14 @@ final class CodexApprovalCenter {
                                                     .joined(separator: "\n\n"),
                                           preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "允许", style: .default) { _ in
-                completion(.approved)
+                completion(.accept)
             })
             alert.addAction(UIAlertAction(title: "本会话内全部允许", style: .destructive) { [weak self] _ in
                 self?.lock.lock(); self?.sessionApprovedAll = true; self?.lock.unlock()
-                completion(.approvedForSession)
+                completion(.acceptForSession)
             })
             alert.addAction(UIAlertAction(title: "拒绝", style: .cancel) { _ in
-                completion(.denied)
+                completion(.decline)
             })
             host.present(alert, animated: true)
 
@@ -135,7 +140,7 @@ final class CodexApprovalCenter {
             DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
                 if alert.presentingViewController != nil {
                     alert.dismiss(animated: false)
-                    completion(.denied)
+                    completion(.decline)
                 }
             }
         }
