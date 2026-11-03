@@ -233,32 +233,50 @@ final class CodexRuntime {
     }
 
     /// initialize 握手（只做一次；进程重启后重做）
+    ///
+    /// 官方定义（app-server InitializeParams）：
+    ///   { clientInfo: {name, title, version}, capabilities: { experimentalApi, requestAttestation, ... } }
+    /// `experimentalApi` 必须放在 **capabilities 里**，`requestAttestation` 也是必填布尔。
+    /// 之前发成顶层字段 → 服务端认为没声明能力 → thread/start.dynamicTools 直接 -32600。
     private func ensureHandshake(completion: @escaping () -> Void) {
         if handshakeDone {
             completion()
             return
         }
+        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
+        let clientInfo: [String: Any] = ["name": "trollcodex", "title": "TrollCodex", "version": version]
         let rich: [String: Any] = [
-            "clientInfo": ["name": "trollcodex", "version": "7.1.290"],
-            "experimentalApi": true
+            "clientInfo": clientInfo,
+            "capabilities": ["experimentalApi": true, "requestAttestation": false]
         ]
+        // 老版本可能还没有 capabilities 概念：退化成 null 再退化成空
+        let lean: [String: Any] = ["clientInfo": clientInfo, "capabilities": NSNull()]
+
         let finish: (Result<Any, Error>) -> Void = { [weak self] result in
             guard let self else { return }
-            if case .failure(let error) = result {
+            switch result {
+            case .failure(let error):
                 NetworkLog.shared.log("[codex] initialize 失败（继续尝试）：\(error.localizedDescription)")
-            } else {
+            case .success:
                 self.handshakeDone = true
-                // 部分版本要求跟一条 initialized 通知
                 self.rpc.notify("initialized", params: [:])
             }
             completion()
         }
+
         rpc.request("initialize", params: rich) { [weak self] result in
-            if case .failure = result {
-                // 老版本认最小参数：再试一次
-                self?.rpc.request("initialize", params: [:], completion: finish)
-            } else {
+            switch result {
+            case .success:
                 finish(result)
+            case .failure:
+                self?.rpc.request("initialize", params: lean) { second in
+                    switch second {
+                    case .success:
+                        finish(second)
+                    case .failure:
+                        self?.rpc.request("initialize", params: [:], completion: finish)
+                    }
+                }
             }
         }
     }
@@ -283,17 +301,15 @@ final class CodexRuntime {
         NetworkLog.shared.log("[codex] app-server started: \(binary)")
     }
 
-    /// `thread/start`：先带 instructions 试一次，参数不被接受就自动降级重试
+    /// `thread/start` 三级降级：
+    ///   1) instructions + dynamicTools（最优：提示词与工具都走进程内）
+    ///   2) 去掉 instructions（老版本不认 baseInstructions）
+    ///   3) 去掉 dynamicTools 并改走 MCP 通道（服务端要求 experimentalApi 却拿不到时）
+    /// 任何一级成功即返回 threadId；全失败才把错误抛给上层。
     private func startThread(instructions: String?, completion: @escaping (Result<String, Error>) -> Void) {
         let specs = CodexEngine.dynamicToolSpecs()
-        var rich: [String: Any] = ["cwd": NSHomeDirectory()]
-        if !specs.isEmpty { rich["dynamicTools"] = specs }
         let trimmed = (instructions ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            // 不同 codex 版本对这两个字段的支持不一致：都塞进去，被拒就整体降级
-            rich["baseInstructions"] = trimmed
-            rich["developerInstructions"] = trimmed
-        }
+        let cwd = NSHomeDirectory()
 
         let parse: (Result<Any, Error>) -> Void = { result in
             switch result {
@@ -310,16 +326,43 @@ final class CodexRuntime {
             }
         }
 
-        rpc.request("thread/start", params: rich) { [weak self] result in
-            if case .failure(let error) = result, !trimmed.isEmpty, CodexRuntime.isParamRejection(error) {
-                // 降级：只用被实测验证过的最小字段集（cwd + dynamicTools）
-                NetworkLog.shared.log("[codex] thread/start 拒绝 instructions 字段，降级重试")
-                var minimal: [String: Any] = ["cwd": NSHomeDirectory()]
-                if !specs.isEmpty { minimal["dynamicTools"] = specs }
-                self?.rpc.request("thread/start", params: minimal, completion: parse)
-            } else {
+        var params: [String: Any] = ["cwd": cwd]
+        if !specs.isEmpty { params["dynamicTools"] = specs }
+        if !trimmed.isEmpty {
+            params["baseInstructions"] = trimmed
+            params["developerInstructions"] = trimmed
+        }
+
+        rpc.request("thread/start", params: params) { [weak self] result in
+            guard let self else { return }
+            guard case .failure(let error) = result else {
                 parse(result)
+                return
             }
+
+            // 情况 A：服务端明确要求 experimentalApi 才肯收 dynamicTools
+            let text = error.localizedDescription.lowercased()
+            let wantsExperimental = text.contains("experimentalapi") || text.contains("dynamic_tools") || text.contains("dynamictools")
+            if wantsExperimental, !specs.isEmpty {
+                NetworkLog.shared.log("[codex] dynamicTools 被拒（\(error.localizedDescription)），改走 MCP 工具通道")
+                CodexKernel.forceMCPRegistration = true
+                CodexKernel.ensureConfig(force: true)
+                var noTools = params
+                noTools.removeValue(forKey: "dynamicTools")
+                self.rpc.request("thread/start", params: noTools, completion: parse)
+                return
+            }
+
+            // 情况 B：参数不被接受 → 先去掉 instructions 再试（保留 dynamicTools）
+            if !trimmed.isEmpty {
+                NetworkLog.shared.log("[codex] thread/start 拒绝部分字段，降级重试")
+                var lean: [String: Any] = ["cwd": cwd]
+                if !specs.isEmpty { lean["dynamicTools"] = specs }
+                self.rpc.request("thread/start", params: lean, completion: parse)
+                return
+            }
+
+            parse(result)
         }
     }
 

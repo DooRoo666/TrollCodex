@@ -65,36 +65,43 @@ protocol ChatEngine: AnyObject {
 extension OpenAIClient: ChatEngine {}
 
 extension CodexKernel {
+    /// 运行时在 dynamicTools 被服务端拒绝时置 true —— 改走 MCP 通道，保证工具仍然可用
+    static var forceMCPRegistration = false
+
     /// 首次运行时写最小 config.toml：把本 App 注册成 Codex 的 MCP 工具服务端。
-    /// 这样 Codex 拉起的 stdout 事件里，工具调用会以 McpToolCallThreadItem 出现。
-    /// MCP 通道默认关闭；Documents/trollcodex-mcp.txt 存在时才注册（给外部客户端复用）
+    /// 通道默认关闭；`Documents/trollcodex-mcp.txt` 存在、或运行时判定 dynamicTools 不可用时才注册。
     static var mcpOptInPath: String { NSHomeDirectory() + "/Documents/trollcodex-mcp.txt" }
 
-    static func ensureConfig() {
+    static func ensureConfig(force: Bool = false) {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: homePath, withIntermediateDirectories: true)
         migrateAuthIfNeeded()
 
         let path = homePath + "/config.toml"
-        guard fm.fileExists(atPath: mcpOptInPath) else {
-            // 清掉旧版本自动写过的 MCP 注册，避免和 dynamicTools 重复
-            if let old = try? String(contentsOfFile: path, encoding: .utf8),
-               old.contains("# TrollCodex 自动生成") {
+        let wanted = force || forceMCPRegistration || fm.fileExists(atPath: mcpOptInPath)
+        let existing = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+
+        guard wanted else {
+            // 关掉时只清自己写过的那份，不动用户手写配置
+            if existing.contains("# TrollCodex 自动生成") {
                 try? fm.removeItem(atPath: path)
             }
             return
         }
-        guard !fm.fileExists(atPath: path) else { return }
+        if existing.contains("[mcp_servers.trollagent]") { return }   // 已注册
+
         let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
         let exe = Bundle.main.bundlePath + "/" + exeName
-        let text = """
+        let block = """
         # TrollCodex 自动生成
         [mcp_servers.trollagent]
         command = "\(exe)"
         args = ["--codex-mcp"]
         startup_timeout_sec = 30.0
+
         """
-        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        let merged = block + existing
+        try? merged.write(toFile: path, atomically: true, encoding: .utf8)
     }
 }
 
