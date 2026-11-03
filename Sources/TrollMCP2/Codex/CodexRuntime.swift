@@ -11,6 +11,8 @@ struct CodexThreadRecord: Codable {
     var conversationKey: String
     var threadId: String
     var updatedAt: Double
+    /// 建这个 thread 时的模型+上游签名（旧记录没有该字段 → 视为 nil）
+    var signature: String? = nil
 }
 
 final class CodexThreadStore {
@@ -37,13 +39,20 @@ final class CodexThreadStore {
         return records[key]?.threadId
     }
 
-    func set(threadId: String, for key: String) {
+    func set(threadId: String, for key: String, signature: String? = nil) {
         lock.lock()
         records[key] = CodexThreadRecord(conversationKey: key,
                                         threadId: threadId,
-                                        updatedAt: Date().timeIntervalSince1970)
+                                        updatedAt: Date().timeIntervalSince1970,
+                                        signature: signature)
         persistLocked()
         lock.unlock()
+    }
+
+    /// 建这个 thread 时的模型+上游签名；换了就该重开（thread 绑定创建时的 provider）
+    func signature(for key: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return records[key]?.signature
     }
 
     func remove(_ key: String) {
@@ -217,10 +226,16 @@ final class CodexRuntime {
         // 每轮同步一次：设置里换模型/换 Key 后，下一轮就按新配置走（config.toml + auth.json）
         CodexKernel.ensureConfig()
 
+        // 换模型/换上游后旧 thread 不能复用（codex 的 thread 绑定创建时的 provider）
+        let signature = CodexKernel.threadSignature
         if let existing = CodexThreadStore.shared.threadId(for: turn.key) {
-            turn.threadId = existing
-            startTurn(turn, threadId: existing)
-            return
+            if CodexThreadStore.shared.signature(for: turn.key) == signature {
+                turn.threadId = existing
+                startTurn(turn, threadId: existing)
+                return
+            }
+            NetworkLog.shared.log("[codex] 模型/上游已变更，重开会话 thread")
+            CodexThreadStore.shared.remove(turn.key)
         }
 
         // 新会话：系统提示词走官方 baseInstructions / developerInstructions
@@ -234,7 +249,7 @@ final class CodexRuntime {
                 self.finish(turn, .failure(error))
             case .success(let threadId):
                 turn.threadId = threadId
-                CodexThreadStore.shared.set(threadId: threadId, for: turn.key)
+                CodexThreadStore.shared.set(threadId: threadId, for: turn.key, signature: signature)
                 self.startTurn(turn, threadId: threadId)
             }
         }

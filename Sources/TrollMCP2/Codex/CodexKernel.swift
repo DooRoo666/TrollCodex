@@ -164,6 +164,12 @@ extension CodexKernel {
         return "\(cfg.model) @ \(host)"
     }
 
+    /// 模型+上游签名：变了就要重开 codex thread（thread 绑定创建时的 provider）
+    static var threadSignature: String {
+        guard let cfg = activeConfig else { return "none" }
+        return "\(cfg.model)@\(cfg.baseURL)|\(cfg.apiProtocol)"
+    }
+
     static func migrateAuthIfNeeded() {
         let fm = FileManager.default
         let dst = homePath + "/auth.json"
