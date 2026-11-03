@@ -933,16 +933,9 @@ jobs:
           # 改用 bsdtar 读 ar 容器；再不行用 python3 兜底拆 ar。
           tar xf "../$DEB" 2>/dev/null || true
           if [ ! -f data.tar.zst ] && [ ! -f data.tar.xz ] && [ ! -f data.tar.gz ]; then
-            echo "bsdtar 没拆出成员，用 python 兜底"
-            python3 -c "
-import sys
-d=open(sys.argv[1],'rb').read()
-assert d[:8]==b'!<arch>\n'
-p=8
-while p+60<=len(d):
-    h=d[p:p+60]; n=h[:16].decode('utf-8','replace').strip().rstrip('/'); s=int(h[48:58].decode().strip() or 0)
-    open(n,'wb').write(d[p+60:p+60+s]); p+=60+s+(s%2)
-" "../$DEB" || true
+            echo "bsdtar 没拆出成员，改用 7z 兜底"
+            command -v 7z >/dev/null || brew install p7zip >/dev/null 2>&1 || true
+            7z x -y "../$DEB" >/dev/null 2>&1 || true
           fi
           ls -l
           command -v zstd >/dev/null || brew install zstd >/dev/null 2>&1 || true
