@@ -946,6 +946,14 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p native-codex-out
+          # 诊断落盘：API 拿不到 job 日志时，靠这个产物看现场
+          {
+            echo "== zstd =="; command -v zstd || echo "no zstd"
+            echo "== rt =="; ls -la rt 2>&1 | head -30
+            echo "== rt/x =="; ls -la rt/x 2>&1 | head -30
+            echo "== tree =="; find rt -maxdepth 8 2>/dev/null | head -120
+            echo "== big =="; find rt -type f -size +1M 2>/dev/null | head -40
+          } > native-codex-out/diag.txt 2>&1 || true
           BIN=""
           for c in rt/x/var/jb/usr/libexec/codex/codex rt/x/usr/libexec/codex/codex \
                    rt/x/var/jb/usr/bin/codex rt/x/usr/bin/codex; do
@@ -957,17 +965,17 @@ jobs:
           if [ -n "$BIN" ] && [ -f "$BIN" ]; then
             cp "$BIN" native-codex-out/codex
             chmod +x native-codex-out/codex
-            echo ">>> 取自: $BIN"
-            echo ">>> 大小: $(du -h native-codex-out/codex | cut -f1)"
-            echo ">>> 类型: $(file native-codex-out/codex | head -c 160)"
-            shasum -a 256 native-codex-out/codex
+            echo ">>> 取自: $BIN" >> native-codex-out/diag.txt
+            echo ">>> 大小: $(du -h native-codex-out/codex | cut -f1)" >> native-codex-out/diag.txt
+            echo ">>> 类型: $(file native-codex-out/codex | head -c 160)" >> native-codex-out/diag.txt
           else
-            echo "!!! 未找到 codex 二进制"
+            echo "!!! 未找到 codex 二进制" >> native-codex-out/diag.txt
           fi
+          cat native-codex-out/diag.txt | tail -30
 
       - name: Upload native-codex
         uses: actions/upload-artifact@v4
         with:
           name: native-codex
-          path: native-codex-out/codex
+          path: native-codex-out/
           if-no-files-found: warn
