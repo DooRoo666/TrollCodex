@@ -1,8 +1,8 @@
-# 协议探针：2–4 分钟验证"我们发的 app-server 请求官方 codex 认不认"
+# 协议探针：3–5 分钟验证"我们发的 app-server 请求官方 codex 认不认"
 #
-# 为什么需要它：iOS 构建一次 15 分钟以上，协议细节（字段名/层级/必填项）一旦写错，
-# 就要靠用户装机才能发现。协议与平台无关，所以这里用官方发布的同版本 Linux CLI
-# 真跑一遍 codex app-server，把参数喂进去看结果。
+# 为什么需要它：iOS 构建一次 15 分钟以上，协议细节（字段名/层级/必填项）写错时，
+# 原先只能靠用户装机才发现。协议与平台无关，这里用官方同版本 Linux CLI 真跑
+# codex app-server，把参数喂进去看结果。
 #
 # 不需要登录、不调用模型：只验 initialize / thread/start(dynamicTools) / turn/start 的形状。
 name: codex-probe
@@ -19,29 +19,58 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch official codex CLI (same tag as bundled runtime)
+      - name: Fetch official codex CLI + dump diagnostics
         run: |
-          set -euo pipefail
+          mkdir -p probe && cd probe
           V="0.162.1"
           URL="https://github.com/openai/codex/releases/download/rust-v${V}/codex-x86_64-unknown-linux-musl.tar.gz"
-          echo "downloading $URL"
-          curl -fsSL -o codex.tgz "$URL"
-          tar xzf codex.tgz
-          ls -l
-          # 压缩包里的可执行名带 target 后缀，按内容找再把名字统一成 ./codex
-          FOUND=$(find . -maxdepth 2 -type f -name 'codex*' ! -name '*.tgz' | head -1)
-          echo "found: $FOUND"
-          chmod +x "$FOUND"
-          cp "$FOUND" ./codex
-          chmod +x ./codex
-          ./codex --version
-          echo "sha256: $(sha256sum ./codex | cut -d' ' -f1)"
-          echo "size:   $(du -h ./codex | cut -f1)"
+          {
+            echo "== uname =="; uname -a
+            echo "== curl =="
+            curl -fSL --retry 3 -w 'HTTP %{http_code} downloaded=%{size_download}\n' -o codex.tgz "$URL"
+            echo "curl_rc=$?"
+            echo "== files =="; ls -l
+            echo "== tar =="
+            tar xzf codex.tgz
+            echo "tar_rc=$?"
+            echo "== files after tar =="; ls -l
+            echo "== file types =="; for f in *; do file "$f"; done
+          } > fetch.log 2>&1
+          cat fetch.log
+
+      - name: Prepare binary
+        run: |
+          set +e
+          BIN=""
+          for c in probe/codex probe/codex-x86_64-unknown-linux-musl; do
+            [ -f "$c" ] && { chmod +x "$c"; BIN="$c"; break; }
+          done
+          if [ -z "$BIN" ]; then
+            BIN=$(find probe -maxdepth 2 -type f -size +10M ! -name '*.tgz' | head -1)
+            chmod +x "$BIN" 2>/dev/null
+          fi
+          echo "BIN=$BIN" | tee -a probe/fetch.log
+          if [ -n "$BIN" ]; then
+            "./$BIN" --version 2>&1 | tee -a probe/fetch.log
+            echo "$PWD/$BIN" > /tmp/codex_bin_path
+          fi
 
       - name: Probe protocol (initialize → thread/start(dynamicTools) → turn/start)
         run: |
-          CODEX_BIN="$PWD/codex" python3 scripts/codex_probe.py
+          if [ ! -s /tmp/codex_bin_path ]; then
+            echo "没有可执行文件，跳过探针（见 fetch 诊断产物）"
+            exit 1
+          fi
+          CODEX_BIN="$(cat /tmp/codex_bin_path)" python3 scripts/codex_probe.py
+
+      - name: Upload diagnostics (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-probe-diagnostics
+          path: probe/fetch.log
+          if-no-files-found: warn
