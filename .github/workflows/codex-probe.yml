@@ -31,10 +31,16 @@ jobs:
           echo "downloading $URL"
           curl -fsSL -o codex.tgz "$URL"
           tar xzf codex.tgz
-          chmod +x codex
+          ls -l
+          # 压缩包里的可执行名带 target 后缀，按内容找再把名字统一成 ./codex
+          FOUND=$(find . -maxdepth 2 -type f -name 'codex*' ! -name '*.tgz' | head -1)
+          echo "found: $FOUND"
+          chmod +x "$FOUND"
+          cp "$FOUND" ./codex
+          chmod +x ./codex
           ./codex --version
-          echo "sha256: $(sha256sum codex | cut -d' ' -f1)"
-          echo "size:   $(du -h codex | cut -f1)"
+          echo "sha256: $(sha256sum ./codex | cut -d' ' -f1)"
+          echo "size:   $(du -h ./codex | cut -f1)"
 
       - name: Probe protocol (initialize → thread/start(dynamicTools) → turn/start)
         run: |
