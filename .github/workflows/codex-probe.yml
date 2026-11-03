@@ -1,0 +1,41 @@
+# 协议探针：2–4 分钟验证"我们发的 app-server 请求官方 codex 认不认"
+#
+# 为什么需要它：iOS 构建一次 15 分钟以上，协议细节（字段名/层级/必填项）一旦写错，
+# 就要靠用户装机才能发现。协议与平台无关，所以这里用官方发布的同版本 Linux CLI
+# 真跑一遍 codex app-server，把参数喂进去看结果。
+#
+# 不需要登录、不调用模型：只验 initialize / thread/start(dynamicTools) / turn/start 的形状。
+name: codex-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Sources/TrollMCP2/Codex/**"
+      - "scripts/codex_probe.py"
+      - ".github/workflows/codex-probe.yml"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch official codex CLI (same tag as bundled runtime)
+        run: |
+          set -euo pipefail
+          V="0.162.1"
+          URL="https://github.com/openai/codex/releases/download/rust-v${V}/codex-x86_64-unknown-linux-musl.tar.gz"
+          echo "downloading $URL"
+          curl -fsSL -o codex.tgz "$URL"
+          tar xzf codex.tgz
+          chmod +x codex
+          ./codex --version
+          echo "sha256: $(sha256sum codex | cut -d' ' -f1)"
+          echo "size:   $(du -h codex | cut -f1)"
+
+      - name: Probe protocol (initialize → thread/start(dynamicTools) → turn/start)
+        run: |
+          CODEX_BIN="$PWD/codex" python3 scripts/codex_probe.py
