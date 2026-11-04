@@ -164,6 +164,17 @@ extension CodexKernel {
         return "\(cfg.model) @ \(host)"
     }
 
+    /// codex 的工作目录：绑定到用户工作区（放项目/文件的地方），不是 App 家目录。
+    /// 这样 codex 自带的读文件/跑命令工具才有意义（否则它只能在沙盒里瞎翻）。
+    static var workspacePath: String {
+        let root = Workspace.root
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue {
+            return root.path
+        }
+        return NSHomeDirectory()
+    }
+
     /// 模型+上游签名：变了就要重开 codex thread（thread 绑定创建时的 provider）
     static var threadSignature: String {
         guard let cfg = activeConfig else { return "none" }

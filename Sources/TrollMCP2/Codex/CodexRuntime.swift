@@ -308,7 +308,7 @@ final class CodexRuntime {
     /// dynamicTools 由 initialize 的 capabilities.experimentalApi 授权；被拒就明确报错。
     private func startThread(instructions: String?, completion: @escaping (Result<String, Error>) -> Void) {
         let specs = CodexEngine.dynamicToolSpecs()
-        var params: [String: Any] = ["cwd": NSHomeDirectory()]
+        var params: [String: Any] = ["cwd": CodexKernel.workspacePath]
         if !specs.isEmpty { params["dynamicTools"] = specs }
         if let trimmed = instructions?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
             params["baseInstructions"] = trimmed
