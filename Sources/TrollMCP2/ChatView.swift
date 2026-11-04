@@ -83,8 +83,9 @@ struct ChatView: View {
                 } else {
                     messageList
                 }
-                // v2.9.72：工作流可视化步骤条
-                WorkflowProgressView()
+                // v7.1.308：删掉 WorkflowProgressView（"处理请求"那行步骤条）。
+                // 它是全屏顶部的一条独立状态条，和消息气泡下方的"正在思考/请求中"重复；
+                // 步骤信息已经由 LiveTrailCard 在气泡下方显示。
             }
             // v2.9.244：输入框改用 safeAreaInset 挂底部——标准键盘避让，不再手动 padding 双重压缩内容区
             .safeAreaInset(edge: .bottom, spacing: 0) {
