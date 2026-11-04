@@ -523,6 +523,17 @@ final class CodexRuntime {
 
         case "item/started", "item/completed", "item/updated":
             guard let item = params["item"] as? [String: Any] else { return }
+            // v7.1.315：codex 一轮里可能发多段 agentMessage（前言 → 调用工具 → 结论），
+            // 以前全拼进同一个 turn.text，界面上就是"一段话里塞了三步"。
+            // 这里在"新的 agentMessage 开始且已有正文"时补空行，至少把各阶段分开。
+            if method == "item/started", (item["type"] as? String) == "agentMessage" {
+                let itemId = (item["id"] as? String) ?? ""
+                if !itemId.isEmpty, itemId != turn.currentAgentItemId, !turn.text.isEmpty {
+                    turn.text += "\n\n"
+                    DispatchQueue.main.async { turn.onDelta?("\n\n") }
+                }
+                turn.currentAgentItemId = itemId
+            }
             // 兜底：某些版本不发 agentMessage/delta，只在 item/completed 里给全文
             if method == "item/completed", (item["type"] as? String) == "agentMessage" {
                 let full = (item["text"] as? String) ?? ""
@@ -908,6 +919,8 @@ final class CodexTurn {
     var firstOutputAt: Date?
     /// thread 失效（重装/清数据后 codex 侧已无该会话）时只自动重开一次，防死循环
     var didRecoverThread = false
+    /// v7.1.315：当前正在累积的 agentMessage item id（多段之间补空行，避免"三步塞成一段"）
+    var currentAgentItemId: String?
 
     init(key: String,
          instructions: String?,

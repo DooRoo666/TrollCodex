@@ -104,6 +104,16 @@ extension CodexKernel {
             """)
         }
 
+        // v7.1.315：关掉 code mode host。
+        // 证据：设备上工具调用返回"运行环境异常退出（SIGTRAP）"——那是 codex 拉起的
+        // codex-code-mode-host 崩溃（iOS 上它要 JIT/额外权限）。关掉后 codex 走普通
+        // dynamicTools 回调（直接进我们进程内的 ToolRegistry），不再依赖这个外部进程。
+        blocks.append("""
+        [features]
+        code_mode_host = false
+        code_mode = false
+        """)
+
         if blocks.isEmpty {
             if !existing.isEmpty { try? fm.removeItem(atPath: path) }
             return
