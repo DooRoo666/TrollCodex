@@ -491,6 +491,15 @@ if [ -f "native-codex-out/codex" ]; then
     mkdir -p "$APP/CodexRuntime"
     cp "native-codex-out/codex" "$APP/CodexRuntime/codex"
     chmod +x "$APP/CodexRuntime/codex"
+    # v7.1.309：codex 会按自身路径找 codex-code-mode-host（缺它 → code mode 失败，
+    # 表现就是"设备工具调用环境启动失败 / No such file or directory"）。
+    if [ -f "native-codex-out/codex-code-mode-host" ]; then
+        cp "native-codex-out/codex-code-mode-host" "$APP/CodexRuntime/codex-code-mode-host"
+        chmod +x "$APP/CodexRuntime/codex-code-mode-host"
+        echo ">>> bundled code-mode host ($(du -h "$APP/CodexRuntime/codex-code-mode-host" | cut -f1))"
+    else
+        echo ">>> code-mode host 未就绪（code mode 会 fail-closed）" >&2
+    fi
     # iOS 上子进程必须自带签名才能 exec，走和 bin/ 工具同一套 entitlements
     if command -v ldid >/dev/null 2>&1; then
         if [ -f "Support/bin-entitlements.plist" ]; then
@@ -501,6 +510,11 @@ if [ -f "native-codex-out/codex" ]; then
         fi
     fi
     echo ">>> bundled codex runtime ($(du -h "$APP/CodexRuntime/codex" | cut -f1))"
+    # v7.1.309：host 同样要签（iOS 上子进程必须自带签名才能 exec）
+    if [ -f "$APP/CodexRuntime/codex-code-mode-host" ] && command -v ldid >/dev/null 2>&1; then
+        ldid -S"Support/bin-entitlements.plist" "$APP/CodexRuntime/codex-code-mode-host" 2>/dev/null \
+            || ldid -S "$APP/CodexRuntime/codex-code-mode-host" 2>/dev/null || true
+    fi
 else
     echo ">>> codex runtime 未就绪（native-codex 产物缺失）——退化为外部运行时探测" >&2
 fi

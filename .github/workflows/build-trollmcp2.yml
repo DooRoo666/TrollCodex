@@ -969,8 +969,12 @@ jobs:
           set -uo pipefail
           mkdir -p native-codex-out
           BIN=""
+          # v7.1.309：除 codex 还要带上 codex-code-mode-host（48MB）。
+          # 缺它会报 `codex-code-mode-host: No such file or directory`，
+          # 模型就把工具调用失败归因成"设备工具调用环境启动失败"。
+          BIN=""
           for c in rt/x/var/jb/usr/libexec/codex/codex rt/x/usr/libexec/codex/codex; do
-            [ -f "$c" ] && { BIN="$c"; break; }
+            if [ -f "$c" ]; then BIN="$c"; break; fi
           done
           if [ -n "$BIN" ]; then
             cp "$BIN" native-codex-out/codex
@@ -978,6 +982,15 @@ jobs:
             echo ">>> 取自 $BIN"
             ls -lh native-codex-out/codex
             sha256sum native-codex-out/codex
+            # host 二进制必须与 codex 同目录，codex 按自身路径去找它
+            HOST=$(dirname "$BIN")/codex-code-mode-host
+            if [ -f "$HOST" ]; then
+              cp "$HOST" native-codex-out/codex-code-mode-host
+              chmod +x native-codex-out/codex-code-mode-host
+              echo ">>> host 已带上: $(du -h native-codex-out/codex-code-mode-host | cut -f1)"
+            else
+              echo "!!! 未找到 codex-code-mode-host（将导致 code mode 不可用）"
+            fi
           else
             echo "!!! 未找到 codex 二进制"
           fi

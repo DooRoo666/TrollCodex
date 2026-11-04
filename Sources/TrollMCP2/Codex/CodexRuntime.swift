@@ -133,13 +133,26 @@ final class CodexRuntime {
 
     var isProcessAlive: Bool { rpc.isRunning }
 
-    /// 上一轮的耗时拆解（状态页显示，便于判断慢在冷启动还是首字）
+    /// 上一轮的耗时拆解（对齐 MT-Agent 的口径：时长 + 输入/输出 token + 输出速度）
     struct TurnTiming {
         let connectMs: Int
         let ttftMs: Int
         let totalMs: Int
+        let inputTokens: Int
+        let outputTokens: Int
+        var tokensPerSecond: Double {
+            guard totalMs > 0, outputTokens > 0 else { return 0 }
+            return Double(outputTokens) / (Double(totalMs) / 1000.0)
+        }
         var description: String {
-            "连接 \(connectMs)ms · 首字 \(ttftMs)ms · 总 \(totalMs)ms"
+            var parts = ["连接 \(connectMs)ms", "首字 \(ttftMs < 0 ? "—" : "\(ttftMs)ms")",
+                         "总 \(totalMs)ms"]
+            if outputTokens > 0 {
+                parts.append("输出 \(outputTokens) tok")
+                parts.append(String(format: "%.1f tok/s", tokensPerSecond))
+            }
+            if inputTokens > 0 { parts.append("输入 \(inputTokens) tok") }
+            return parts.joined(separator: " · ")
         }
     }
     private(set) var lastTiming: TurnTiming?
@@ -759,7 +772,10 @@ final class CodexRuntime {
         let ttftBase = turn.readyAt ?? turn.submitAt
         let ttftMs = turn.firstOutputAt.map { Int($0.timeIntervalSince(ttftBase) * 1000) } ?? -1
         let totalMs = Int(Date().timeIntervalSince(turn.submitAt) * 1000)
-        let timing = TurnTiming(connectMs: max(0, connectMs), ttftMs: ttftMs, totalMs: totalMs)
+        let inputTok = (usage?["prompt_tokens"] as? Int) ?? 0
+        let outputTok = (usage?["completion_tokens"] as? Int) ?? 0
+        let timing = TurnTiming(connectMs: max(0, connectMs), ttftMs: ttftMs, totalMs: totalMs,
+                                inputTokens: inputTok, outputTokens: outputTok)
         lastTiming = timing
         NetworkLog.shared.log("[codex] timing \(timing.description)")
         switch result {
