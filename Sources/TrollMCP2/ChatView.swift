@@ -18,8 +18,10 @@ struct ChatView: View {
     @State private var toolsRunExpanded: Set<String> = []
     /// v7.1.306：长会话分页加载——先渲染尾部 N 条，点顶部分批加载更早的
     @State private var renderLimit = 80
-    /// v7.1.312：请求进行中排队的输入，当前轮结束后自动发出
+    /// v7.1.314：请求进行中排队等输入，当前轮结束后自动发出
     @State private var queuedText: String?
+    /// v7.1.314：本轮发送时刻——用于实时计时（区分"卡住"还是"在处理"）
+    @State private var sendStartedAt: Date?
     // v2.9.234：推理强度/智能搜索持久化(@AppStorage)——之前纯@State,关app重开必丢
     @AppStorage("chat_reasoning") private var reasoning = 0   // 0=低 1=中 2=高 3=最高(xhigh) 4=极限(max)
     @AppStorage("chat_smart_search") private var smartSearch = true
@@ -101,20 +103,7 @@ struct ChatView: View {
             }
             // v2.9.244：输入框改用 safeAreaInset 挂底部——标准键盘避让，不再手动 padding 双重压缩内容区
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    // v7.1.310：上一轮耗时（对齐 MT-Agent 的 turn 头信息：时长 + token + 速度）
-                    if !store.isLoading, let timing = CodexRuntime.shared.lastTiming {
-                        Text(timing.description)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    inputBar
-                }
+                inputBar
             }
             .navigationTitle(selectionMode ? L10n.t("i18n_1031", selectedIds.count) : store.currentTitle)
             .navigationBarTitleDisplayMode(.inline)
@@ -695,6 +684,7 @@ struct ChatView: View {
                 }
                 // v7.1.109-peers：请求完成 → 刷新上下文环形指示器（records 读文件，仅此刻读一次）
                 if !loading {
+                    sendStartedAt = nil
                     refreshRingTok()
                     // v7.1.312：排队的输入在当前轮结束后自动发出
                     if let queued = queuedText, !queued.isEmpty {
@@ -790,7 +780,7 @@ struct ChatView: View {
                         Image(systemName: "circle.fill")
                             .font(.system(size: 7))
                             .foregroundColor(.green)
-                        Text(modelStore.defaultConfig?.name ?? L10n.t("i18n_1032"))
+                        Text(modelStore.defaultConfig?.model ?? modelStore.defaultConfig?.name ?? L10n.t("i18n_1032"))
                             .font(.caption.weight(.medium))
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
@@ -826,17 +816,24 @@ struct ChatView: View {
                 QuickTabButton(icon: "folder", label: L10n.t("i18n_1040")) {
                     AppUIState.shared.quickFilesPresented = true
                 }.frame(height: 36)
-                // v7.1.109-peers：上下文指示（Minis 式文字 + Cursor 式圆环）——行尾，不占胶囊位
-                contextText
-                    .padding(.leading, 4)
-                contextRing
-                    .padding(.leading, 2)
+                // v7.1.314：上下文指示（占用文字 + 圆环）从胶囊条行尾移到输入框下方，
+                // 这样发送时也能实时看到（用户："放最后我也不能实时看到"）。
             }
         }
     }
 
     private var inputBar: some View {
         VStack(spacing: 0) {
+            // v7.1.314：上下文占用 + 实时状态行（原来在胶囊条行尾，看不到实时变化）
+            HStack(spacing: 8) {
+                contextText
+                contextRing
+                Spacer(minLength: 8)
+                liveStatusLine
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+
             // v2.9.10：待发送附件预览（图片缩略图 / 应用图标 / 文件）
             AttachmentPreviewStrip(attachments: pendingAttachments) { att in
                 withAnimation { pendingAttachments.removeAll { $0.id == att.id } }
@@ -964,6 +961,33 @@ struct ChatView: View {
         .background(Color(.systemBackground))
         // v2.9.30：授权弹窗已移出到 NavigationView 外层（见 body 链），
         // 此处不再挂 actionSheet，避免与上方 +号 的 actionSheet 同 view 覆盖。
+    }
+
+    /// v7.1.314：发送即开始计时——处理中显示秒数 + 阶段，结束后显示上一轮完整耗时
+    private var liveStatusLine: some View {
+        Group {
+            if store.isLoading {
+                TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                    let started = sendStartedAt ?? Date()
+                    let secs = Date().timeIntervalSince(started)
+                    Text("● \(phaseText) \(String(format: "%.1f", secs))s")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.orange)
+                }
+            } else if let timing = CodexRuntime.shared.lastTiming {
+                Text(timing.description)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    /// 当前阶段：等待首字 / 处理中
+    private var phaseText: String {
+        let status = store.statusText ?? ""
+        if status.contains("等待首个输出") { return "等待首字" }
+        return "处理中"
     }
 
     private func reasoningLabel() -> String {
@@ -1104,6 +1128,8 @@ struct ChatView: View {
         }
         guard let cfg = modelStore.defaultConfig,
               (!inputText.isEmpty || !pendingAttachments.isEmpty || !pendingImages.isEmpty) else { return }
+        // v7.1.314：记录发送时刻，输入框下方实时计时
+        sendStartedAt = Date()
         // v3.1.5: 自动提取关键信息（App 名、bundle id、文件路径等）
         AutoContextExtractor.shared.extract(from: inputText)
         // v3.1.1: 模型不支持视觉时，自动 OCR 识别图片文字，拼到消息里
@@ -3431,7 +3457,7 @@ struct ChatInputTextView: UIViewRepresentable {
     @Binding var height: CGFloat
 
     static let minHeight: CGFloat = 36
-    static let maxHeight: CGFloat = 4 * (UIFont.systemFont(ofSize: 16).lineHeight).rounded(.up) + 12
+    static let maxHeight: CGFloat = 4 * (UIFont.systemFont(ofSize: 16).lineHeight).rounded(.up) + 16
 
     func makeUIView(context: Context) -> RSKGrowingTextView {
         let tv = RSKGrowingTextView()
@@ -3445,7 +3471,8 @@ struct ChatInputTextView: UIViewRepresentable {
         tv.delegate = context.coordinator
         // v7.1.289：明确零内边距（AppMain 已全局清 UITextView.appearance()，这里对本控件再明确一次，
         // 避免滚动/候选栏出现时内边距变化把高度算偏）；滚动行为仍交给 RSKGrowingTextView 自己管
-        tv.textContainerInset = .zero
+        // v7.1.314：上下各 8pt 内边距——单行文字才会在 36pt 高度里垂直居中（此前贴顶，看起来偏上）
+        tv.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         return tv
     }
