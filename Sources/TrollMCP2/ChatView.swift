@@ -121,27 +121,12 @@ struct ChatView: View {
             .toolbar {
                 // v3.4.3：标题 + 模型名（🟢 deepseek v4 ▽）与右侧图标放同一平行线（导航栏 principal）
                 ToolbarItem(placement: .principal) {
-                    HStack(spacing: 8) {
-                        Text(selectionMode ? L10n.t("i18n_1031", selectedIds.count) : store.currentTitle)
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .lineLimit(1)
-                        Button(action: { showModelPicker = true }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "circle.fill")
-                                    .font(.system(size: 7))
-                                    .foregroundColor(.green)
-                                Text(modelStore.defaultConfig?.name ?? L10n.t("i18n_1032"))
-                                    .font(.caption2)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
+                    // v7.1.313：导航栏只留标题。模型 + 强度已移到输入框上方（拍板：跟 MT 一样，
+                    // 模型相关控件都在输入区，不占顶部）。
+                    Text(selectionMode ? L10n.t("i18n_1031", selectedIds.count) : store.currentTitle)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     if selectionMode {
@@ -798,6 +783,26 @@ struct ChatView: View {
     private var chatModeBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                // v7.1.313：模型胶囊放到输入区第一颗（对齐 MT：模型/强度都在输入框附近）。
+                // 点一下打开模型选择器；右边紧跟强度胶囊。
+                Button(action: { showModelPicker = true }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 7))
+                            .foregroundColor(.green)
+                        Text(modelStore.defaultConfig?.name ?? L10n.t("i18n_1032"))
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 36)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                }
+                .buttonStyle(.plain)
                 // v3.4.5：六个胶囊统一同宽同高（76×32），比例完全一致、长度略长
                 // v3.4.7：推理用"大脑"图标、思考用"灯泡"图标（用户指定，勿对调）
                 ChatChip(label: L10n.t("i18n_1037", reasoningLabel()), action: {
