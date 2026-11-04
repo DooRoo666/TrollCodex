@@ -34,6 +34,7 @@ struct CodexRuntimeStatusView: View {
                 row("运行时", binaryPath == nil ? "缺失（包内未带）" : "已就绪",
                     color: binaryPath == nil ? .orange : .green)
                 row("进程", processAlive ? "运行中" : "未启动")
+                row("上一轮耗时", CodexRuntime.shared.lastTiming?.description ?? "—")
             } header: {
                 Text("状态")
             } footer: {

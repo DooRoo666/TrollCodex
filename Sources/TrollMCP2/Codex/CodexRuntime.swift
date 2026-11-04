@@ -133,6 +133,22 @@ final class CodexRuntime {
 
     var isProcessAlive: Bool { rpc.isRunning }
 
+    /// 上一轮的耗时拆解（状态页显示，便于判断慢在冷启动还是首字）
+    struct TurnTiming {
+        let connectMs: Int
+        let ttftMs: Int
+        let totalMs: Int
+        var description: String {
+            "连接 \(connectMs)ms · 首字 \(ttftMs)ms · 总 \(totalMs)ms"
+        }
+    }
+    private(set) var lastTiming: TurnTiming?
+
+    /// 首个可见输出到达（正文/思考/整段 item）——只记一次
+    static func markFirstOutput(_ turn: CodexTurn) {
+        if turn.firstOutputAt == nil { turn.firstOutputAt = Date() }
+    }
+
     // MARK: 提交一轮
 
     func submit(conversationKey: String,
@@ -172,6 +188,12 @@ final class CodexRuntime {
         // 整轮期间持有后台额度：App 退到后台时 codex 子进程才不会被立刻挂起
         // （配合 entitlements 的 com.apple.private.background-task.allowed）
         BackgroundKeeper.shared.begin(reason: "turn")
+
+        // 体感优化：1.5s 内还没有任何输出，就把状态改掉，别让界面看着像卡死
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak turn] in
+            guard let turn, !turn.finished, turn.firstOutputAt == nil else { return }
+            turn.onStatus?("已连接 · 等待首个输出…")
+        }
 
         workQueue.async { [weak self] in
             self?.start(turn)
@@ -225,6 +247,7 @@ final class CodexRuntime {
     }
 
     private func beginTurn(_ turn: CodexTurn) {
+        turn.readyAt = Date()
         turn.onStatus?("Codex 就绪 · 处理中…")
 
         // 每轮同步一次：设置里换模型/换 Key 后，下一轮就按新配置走（config.toml + auth.json）
@@ -456,11 +479,13 @@ final class CodexRuntime {
         switch method {
         case "item/agentMessage/delta":
             guard let delta = params["delta"] as? String else { return }
+            Self.markFirstOutput(turn)
             turn.text += delta
             DispatchQueue.main.async { turn.onDelta?(delta) }
 
         case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
             guard let delta = params["delta"] as? String else { return }
+            Self.markFirstOutput(turn)
             turn.thinking += delta
             DispatchQueue.main.async { turn.onThinking?(delta) }
 
@@ -707,6 +732,15 @@ final class CodexRuntime {
         BackgroundKeeper.shared.end()
 
         let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
+
+        // v7.1.303：把耗时拆成三段落日志 + 存起来给状态页看
+        let connectMs = Int((turn.readyAt ?? turn.submitAt).timeIntervalSince(turn.submitAt) * 1000)
+        let ttftBase = turn.readyAt ?? turn.submitAt
+        let ttftMs = turn.firstOutputAt.map { Int($0.timeIntervalSince(ttftBase) * 1000) } ?? -1
+        let totalMs = Int(Date().timeIntervalSince(turn.submitAt) * 1000)
+        let timing = TurnTiming(connectMs: max(0, connectMs), ttftMs: ttftMs, totalMs: totalMs)
+        lastTiming = timing
+        NetworkLog.shared.log("[codex] timing \(timing.description)")
         switch result {
         case .success(let payload):
             // Codex-only 场景下模型库可能为空（用户只在 codex 里登录）——config 可选，没有就不记 usage
@@ -793,6 +827,14 @@ final class CodexTurn {
     var startedAt = Date()
     var lastActivityAt = Date()
     var finished = false
+
+    // v7.1.303 计时埋点：把"慢"拆成三段，别再靠猜
+    /// 用户点发送的时刻
+    var submitAt = Date()
+    /// 进程就绪 + initialize 握手完成（含冷启动 spawn）
+    var readyAt: Date?
+    /// 首个可见输出（正文 delta / 思考 delta / 整段 item）的时刻
+    var firstOutputAt: Date?
 
     init(key: String,
          instructions: String?,
