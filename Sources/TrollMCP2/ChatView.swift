@@ -1,4 +1,4 @@
-﻿import SwiftUI
+import SwiftUI
 import UIKit
 import RSKGrowingTextView
 import UniformTypeIdentifiers
@@ -546,7 +546,12 @@ struct ChatView: View {
                         onViewportHeight: { chatViewportHeight = $0 }
                     )
                     .frame(height: 0)
-                    LazyVStack(spacing: 12) {
+                    // v7.1.304：LazyVStack → VStack（修"回答只显示一部分"）。
+                    // 现象：数据完整，界面只显示一截；再发一条消息，上一条立刻补全。
+                    // 根因：LazyVStack 只在行进入可视区时测高，流式文本长高后旧行不重新测量，
+                    // 被裁在旧高度里；下一条插入触发整表重排才补显示。
+                    // 消息行高度会随 streaming 变化，这个容器不能惰性渲染。
+                    VStack(spacing: 12) {
                         // v7.2.3-fix20：连续工具折叠——相邻已完成工具消息聚合成组，
                         // 组默认一行"运行了 N 个工具"，展开显示各工具卡
                         ForEach(ChatListGrouping.group(store.currentMessages), id: \.id) { item in
@@ -595,25 +600,14 @@ struct ChatView: View {
                                 LiveTrailCard(steps: store.liveTrail)
                                     .padding(.trailing, 16)
                             }
-                            if let status = store.statusText {
-                                Text(status)
-                                    .font(.caption)
+                            // v7.1.304：状态只保留一处显示。
+                            // 这里原来有两行（statusText 与"第 N 轮"），和消息气泡下方的
+                            // "正在思考/请求中"重复；去掉左下角这两行，只留 LiveTrail 步骤流。
+                            if store.requestRound > 0 && !store.isLoading {
+                                Text(L10n.t("i18n_1036", store.requestRound))
+                                    .font(.caption2)
                                     .foregroundColor(.secondary)
                                     .padding(.trailing, 16)
-                            }
-                            if store.requestRound > 0 {
-                                // v4.3.71：无轮次上限 (requestRounds==0) 只显示"第 N 轮"
-                                if store.requestRounds > 0 {
-                                    Text(L10n.t("ui_157", store.requestRound, store.requestRounds))
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                        .padding(.trailing, 16)
-                                } else {
-                                    Text(L10n.t("i18n_1036", store.requestRound))
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                        .padding(.trailing, 16)
-                                }
                             }
                         }
                     }
