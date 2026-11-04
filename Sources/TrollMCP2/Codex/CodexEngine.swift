@@ -20,6 +20,8 @@ final class CodexEngine: ChatEngine {
 
     /// 工具卡回调（显示用；工具已由 Codex 通过 dynamicTools 跑完，不要再执行）
     var onToolCard: ((CodexToolCard) -> Void)?
+    /// v7.1.316：codex 一段结束、下一段开始——上层据此新起一条消息（MT 式分步）
+    var onSegmentBreak: (() -> Void)?
 
     private let config: ModelConfig
     private var handle: CodexTurnHandle?
@@ -66,6 +68,9 @@ final class CodexEngine: ChatEngine {
             onThinking: onThinking,
             onToolCard: { [weak self] card in
                 self?.onToolCard?(card)
+            },
+            onSegmentBreak: { [weak self] in
+                self?.onSegmentBreak?()
             },
             completion: { [weak self] result in
                 guard let self else { return }

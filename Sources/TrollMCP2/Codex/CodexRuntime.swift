@@ -181,6 +181,7 @@ final class CodexRuntime {
                 onDelta: ((String) -> Void)?,
                 onThinking: ((String) -> Void)?,
                 onToolCard: ((CodexToolCard) -> Void)?,
+                onSegmentBreak: (() -> Void)? = nil,
                 completion: @escaping (Result<(text: String, thinking: String?), Error>) -> Void) -> CodexTurnHandle? {
 
         let turn = CodexTurn(key: conversationKey,
@@ -193,6 +194,7 @@ final class CodexRuntime {
                              onDelta: onDelta,
                              onThinking: onThinking,
                              onToolCard: onToolCard,
+                             onSegmentBreak: onSegmentBreak,
                              completion: completion)
 
         lock.lock()
@@ -530,7 +532,8 @@ final class CodexRuntime {
                 let itemId = (item["id"] as? String) ?? ""
                 if !itemId.isEmpty, itemId != turn.currentAgentItemId, !turn.text.isEmpty {
                     turn.text += "\n\n"
-                    DispatchQueue.main.async { turn.onDelta?("\n\n") }
+                    // v7.1.316：让上层把后面这段开成新消息（MT 式：一步一条），而不是全塞一段
+                    DispatchQueue.main.async { turn.onSegmentBreak?() }
                 }
                 turn.currentAgentItemId = itemId
             }
@@ -899,6 +902,8 @@ final class CodexTurn {
     let onDelta: ((String) -> Void)?
     let onThinking: ((String) -> Void)?
     let onToolCard: ((CodexToolCard) -> Void)?
+    /// v7.1.316：codex 一段 agentMessage 结束、下一段开始——让上层新起一条消息（MT 式分步）
+    let onSegmentBreak: (() -> Void)?
     let completion: (Result<(text: String, thinking: String?), Error>) -> Void
 
     var threadId: String?
@@ -932,6 +937,7 @@ final class CodexTurn {
          onDelta: ((String) -> Void)?,
          onThinking: ((String) -> Void)?,
          onToolCard: ((CodexToolCard) -> Void)?,
+         onSegmentBreak: (() -> Void)? = nil,
          completion: @escaping (Result<(text: String, thinking: String?), Error>) -> Void) {
         self.key = key
         self.instructions = instructions
@@ -943,6 +949,7 @@ final class CodexTurn {
         self.onDelta = onDelta
         self.onThinking = onThinking
         self.onToolCard = onToolCard
+        self.onSegmentBreak = onSegmentBreak
         self.completion = completion
     }
 }

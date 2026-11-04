@@ -1716,6 +1716,21 @@ final class ConversationStore: ObservableObject {
             codex.onToolCard = { [weak self] card in
                 DispatchQueue.main.async { self?.applyCodexToolCard(card) }
             }
+            // v7.1.316：codex 分步回答——一段结束就收尾当前气泡，下一段自动开新气泡。
+            // 这样"我先读设备信息" / "工具结果：iPhone16,x" / "结论：…" 是三条消息，
+            // 而不是挤在一条里（对齐 MT-Agent 的逐条卡片式节奏）。
+            codex.onSegmentBreak = { [weak self] in
+                guard let self else { return }
+                guard let sid = self.streamingMessageId else { return }
+                if let ci = self.activeConvIndex,
+                   let mi = self.conversations[ci].messages.firstIndex(where: { $0.id == sid }) {
+                    let content = self.conversations[ci].messages[mi].content
+                    if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.streamingMessageId = nil
+                        self.liveProducedID = nil
+                    }
+                }
+            }
         }
         currentClient = client
         let prepared = messagesForAPI(budget: config.effectiveContextTokens)
