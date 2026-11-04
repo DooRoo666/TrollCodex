@@ -149,6 +149,13 @@ final class CodexRuntime {
         if turn.firstOutputAt == nil { turn.firstOutputAt = Date() }
     }
 
+    /// 当前可用的工具名（给失败回包做提示，避免模型误判"宿主不可用"）
+    static func availableToolHint(limit: Int = 8) -> String {
+        let names = CodexToolBridge.exposedDefinitions().map { $0.name }
+        guard !names.isEmpty else { return "当前没有可用工具" }
+        return "当前可用工具（部分）：" + names.prefix(limit).joined(separator: "、")
+    }
+
     // MARK: 提交一轮
 
     func submit(conversationKey: String,
@@ -426,8 +433,20 @@ final class CodexRuntime {
         rpc.request("turn/start", params: params) { [weak self] result in
             guard let self else { return }
             if case .failure(let error) = result {
+                let msg = error.localizedDescription
+                // 重装 App / 清容器后：codex 侧 thread 已经不存在，但本地 threads.json 还留着旧 id。
+                // 旧实现把 -32600 thread not found 直接怼到界面上；现在自动丢缓存并重开一次会话。
+                let threadGone = msg.lowercased().contains("thread not found") || msg.lowercased().contains("not found")
+                if threadGone, turn.threadId != nil, !turn.didRecoverThread {
+                    turn.didRecoverThread = true
+                    NetworkLog.shared.log("[codex] thread 已失效，自动重开会话：\(msg)")
+                    CodexThreadStore.shared.remove(turn.key)
+                    turn.threadId = nil
+                    self.beginTurn(turn)
+                    return
+                }
                 self.finish(turn, .failure(CodexRPCError(code: (error as? CodexRPCError)?.code ?? -1,
-                                                         message: "发送失败：\(error.localizedDescription)")))
+                                                         message: "发送失败：\(msg)")))
             }
         }
 
@@ -696,7 +715,9 @@ final class CodexRuntime {
                 failed = false
                 summary = String(text.prefix(600))
             } catch {
-                let text = "ERROR: \(error.localizedDescription)"
+                // 回包带"哪个工具 + 现有工具样例"，否则模型会以为整个工具宿主挂了
+                let text = "工具 \(name) 调用失败：\(error.localizedDescription)。"
+                    + Self.availableToolHint()
                 response = ["contentItems": [["type": "inputText", "text": text]], "success": false]
                 failed = true
                 summary = text
@@ -835,6 +856,8 @@ final class CodexTurn {
     var readyAt: Date?
     /// 首个可见输出（正文 delta / 思考 delta / 整段 item）的时刻
     var firstOutputAt: Date?
+    /// thread 失效（重装/清数据后 codex 侧已无该会话）时只自动重开一次，防死循环
+    var didRecoverThread = false
 
     init(key: String,
          instructions: String?,

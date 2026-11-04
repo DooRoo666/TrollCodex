@@ -620,24 +620,10 @@ struct ChatView: View {
                             }
                         }
                         if store.isLoading {
-                        // v2.9.34：请求过程可视化（对齐老 MCP 的"正在思考"面板）
-                        // v2.9.127：改为实时执行轨迹（豆包工作任务/Codex 式步骤流）
+                        // v7.1.307：下面这个"正在思考"胶囊已删除——它和消息气泡下方的
+                        // "正在思考/请求中"完全重复（用户明确要求只留气泡下方那处）。
+                        // 这里只保留实时步骤流（信息不同，不重复）。
                         VStack(alignment: .trailing, spacing: 6) {
-                            HStack {
-                                Spacer()
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text(L10n.t("home_thinking"))
-                                        .font(.footnote.weight(.medium))
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                // v3.1.66：tertiarySystemBackground 浅色模式≈白看不见，改 systemGray5
-                                .background(Color(.systemGray5).opacity(0.9))
-                                .cornerRadius(14)
-                                .padding(.trailing, 16)
-                            }
                             if store.isLoading, !store.liveTrail.isEmpty {
                                 LiveTrailCard(steps: store.liveTrail)
                                     .padding(.trailing, 16)
@@ -1793,6 +1779,8 @@ struct MessageBubble: View {
     // 只要内容在增长就持续打字到完整，兼容"整段一次性到达"的中转
     // v3.5.4：用户反馈太慢 → 提速到 ~133 字/秒 (0.015s/tick × 2 字符），快但仍看得出打字感
     @State private var revealedCount = 0
+    /// v7.1.307：打字机目标长度——用 @State 存，timer 里读到的一定是最新值
+    @State private var typeTarget = 0
     @State private var typeTimer: Timer?
     // v4.4.18：流式自动朗读——记录已朗读到的字符位置，content 增长时只把新增整句送 TTS
     @State private var autoSpokenUpTo = 0
@@ -1827,43 +1815,30 @@ struct MessageBubble: View {
     // 不像固定 133 字/秒那样一快到底；也不像 25 字/秒那样拖沓。
     private func startTypeTimer() {
         guard typeTimer == nil else { return }
-        // v7.1.109-peers：非流式(forceType)消息且已打完过 → 直接显示全文，不重打
-        if !isStreaming, Self.doneTyping(for: message.id) {
-            revealedCount = message.content.count
+        // v7.1.307：改用 typeTarget（@State）作为目标长度。
+        // 旧实现的 timer 闭包捕获的是"创建那一刻的 message 结构体"，
+        // 内容随后增长时它读到的仍是旧长度 → 追到旧长度就停，
+        // 表现就是"只显示一半，得刷新（重建视图）才补全"。
+        if !isStreaming {
+            revealedCount = typeTarget
+            if typeTarget > 0 { Self.markDoneTyping(message.id) }
             return
         }
-        // v7.2.5-fix63：长消息（≥4000 字符）不打字机——命令结果/工具长回复直出全文。
-        // 打字机 0.02s tick 每帧全量 ContentBlocks.split(正则)，长文本主线程持续高压；
-        // 多消息同时打字（长会话）→ 主线程风暴 → 白屏（用户滑一下触发重建才恢复）。
-        // 打字机保留给短消息（体验不变），长消息跳过是纯性能修复。
-        if message.content.count >= 4000 {
-            revealedCount = message.content.count
-            Self.markDoneTyping(message.id)
-            return
-        }
-        // v3.5.4：MessageBubble 是 SwiftUI 结构体(值类型)，不能用 [weak self]；定时器 onDisappear 会 invalidate
         typeTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { _ in
             DispatchQueue.main.async {
-                guard self.revealedCount < self.message.content.count else {
+                let target = self.typeTarget
+                guard self.revealedCount < target else {
                     self.stopTypeTimer()
-                    // v7.1.109-peers：打完了——持久化标记（流式消息不标记，流式由内容增长驱动）
                     if !self.isStreaming { Self.markDoneTyping(self.message.id) }
                     return
                 }
-                let total = self.message.content.count
-                let backlog = total - self.revealedCount
-                let idx = self.message.content.index(self.message.content.startIndex, offsetBy: self.revealedCount)
-                let ch = self.message.content[idx]
-                let isPause = ch == "\n" || "，。；：！？、,.。;:!?… ".contains(ch)
-                // v7.1.109-peers：大厂式打字速度——基础 3 字符/tick(150字/秒)不拖沓，
-                // 积压大幅提速追平网络/整段到达，标点/换行 1 字符停顿更有呼吸感
+                let backlog = target - self.revealedCount
                 let step: Int
-                if backlog > 200 { step = 12 }       // 大量积压 → 追平
-                else if backlog > 100 { step = 8 }   // 积压多 → 提速
-                else if backlog > 40 { step = 5 }    // 稍积压 → 中快
-                else if isPause { step = 1 }         // 标点/换行 → 停顿
-                else { step = 3 }                    // 常规 ~150 字/秒
-                self.revealedCount = min(total, self.revealedCount + step)
+                if backlog > 200 { step = 12 }
+                else if backlog > 100 { step = 8 }
+                else if backlog > 40 { step = 5 }
+                else { step = 3 }
+                self.revealedCount = min(target, self.revealedCount + step)
             }
         }
     }
@@ -1958,23 +1933,28 @@ struct MessageBubble: View {
         // 流式消息实时跟随网络（onChange(content) 同步 revealedCount），不启动限速 timer
         .onAppear {
             if isStreaming { Self.clearDoneTyping(message.id) }
-            if !isStreaming, forceType, revealedCount < message.content.count { startTypeTimer() }
+            typeTarget = message.content.count
+            if isStreaming { revealedCount = typeTarget }
+            else if forceType, revealedCount < typeTarget { startTypeTimer() }
+            else { revealedCount = typeTarget }
         }
         .onDisappear { stopTypeTimer() }
         .onChange(of: isStreaming) { streaming in
+            typeTarget = message.content.count
             if streaming {
-                // v7.1.109-peers：流式开始——实时跟随网络，不启动限速 timer
-                revealedCount = message.content.count
+                revealedCount = typeTarget
+            } else {
+                // 流式结束：直接落到全文，绝不停在半截
+                revealedCount = typeTarget
+                Self.markDoneTyping(message.id)
             }
-            // v7.1.109-peers：流式结束且已显示完整 → 标记已打完（防切后台回来重打）
-            else if revealedCount >= message.content.count { Self.markDoneTyping(message.id) }
         }
         .onChange(of: message.content) { _ in
-            // v7.1.109-peers：流式中实时同步（网络到哪渲染哪，大厂式流式）；forceType 落后时启动打字机
-            if isStreaming {
-                revealedCount = message.content.count
-                Self.clearDoneTyping(message.id)
-            } else if revealedCount < message.content.count { startTypeTimer() }
+            // v7.1.307：目标长度用 @State 维护（timer 里读 State 才是最新值）；
+            // 流式实时同步，非流式一律直接全文——"只显示一半"就是这个 stale 捕获造成的。
+            typeTarget = message.content.count
+            revealedCount = typeTarget
+            if isStreaming { Self.clearDoneTyping(message.id) }
         }
     }
 
