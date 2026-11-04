@@ -49,7 +49,8 @@ final class CodexEngine: ChatEngine {
         // token 统计：begin 用真实 history 估输入（Codex 有真 usage 时会覆盖）
         UsageRecorder.shared.begin(messages: messages)
 
-        let instructions = Self.systemPrompt(from: messages)
+        let base = Self.systemPrompt(from: messages) ?? ""
+        let instructions = (base.isEmpty ? "" : base + "\n\n") + Self.iosEnvironmentNotice
         let known = CodexThreadStore.shared.threadId(for: conversationKey) != nil
         let prompt = Self.buildPrompt(from: messages, replayHistory: !known)
         let images = messages.last(where: { $0.role == "user" })?.imageDataURLs ?? []
@@ -98,6 +99,17 @@ final class CodexEngine: ChatEngine {
     }
 
     // MARK: - prompt 组装
+
+    /// iOS 运行环境事实——必须告诉 codex，否则它会去调内置 shell（iOS 上没有 /bin/sh）。
+    static let iosEnvironmentNotice = """
+    ## 运行环境（务必遵守）
+    - 你运行在 iOS 设备上的 TrollAgent App 内，不是普通 Linux 主机。
+    - 本机**没有** /bin/sh、bash、grep、ls 之类命令行工具；codex 内置的 shell / exec_command 会直接失败。
+    - 需要执行命令时调用 `shell.exec` 工具（后端是 TrollRuntime：Alpine aarch64，支持管道、&&、重定向）；缺工具用 `tool.install`，或 `apk add`。
+    - 工具名直接写：`shell.exec` / `app` / `inject` / `network.capture` / `device` / `memory` …；**不要加 `ta` 前缀**（会报 unknownTool）。
+    - 文件读写优先在工作区内；其它 iOS 路径先 `cp` 进工作区，或用 `bind_app` 只读挂载。
+    - 工具调用拿到结果后再继续；不要凭猜测描述执行结果。
+    """
 
     /// system 消息 = 系统提示词 / 开发者指令 / 工具目录 / 环境快照
     static func systemPrompt(from messages: [ChatMessage]) -> String? {

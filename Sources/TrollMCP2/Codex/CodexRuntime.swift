@@ -238,7 +238,7 @@ final class CodexRuntime {
             CodexThreadStore.shared.remove(turn.key)
         }
 
-        // 新会话：系统提示词走官方 baseInstructions / developerInstructions
+        // 新会话：系统提示词只走 developerInstructions（保留 codex 自带 baseInstructions）
         turn.onStatus?("创建会话…")
         startThread(instructions: turn.instructions) { [weak self] result in
             guard let self else { return }
@@ -294,7 +294,12 @@ final class CodexRuntime {
         var env = ProcessInfo.processInfo.environment
         env["CODEX_HOME"] = CodexKernel.homePath
         env["HOME"] = CodexKernel.homePath
-        env["PATH"] = (env["PATH"] ?? "") + ":/usr/bin:/bin"
+        env["PATH"] = CodexKernel.homePath + "/bin"
+        // iOS 上没有 /usr/bin、/bin —— 给假 PATH 只会让 codex 的 shell 工具报看不懂的错。
+        // 命令执行统一走 shell.exec（TrollRuntime：Alpine aarch64，支持管道/&&/重定向）。
+        env["TMPDIR"] = NSTemporaryDirectory()
+        env["LANG"] = "en_US.UTF-8"
+        env["TERM"] = "dumb"
         // v7.1.290：有 API Key 就同时给环境变量（部分 codex 版本只读 env，不读 auth.json）
         if let key = CodexKernel.apiKey {
             env["OPENAI_API_KEY"] = key
@@ -310,8 +315,10 @@ final class CodexRuntime {
         let specs = CodexEngine.dynamicToolSpecs()
         var params: [String: Any] = ["cwd": CodexKernel.workspacePath]
         if !specs.isEmpty { params["dynamicTools"] = specs }
+        // 系统提示词走 developerInstructions，**不覆盖 baseInstructions**：
+        // codex 自带的基础提示词定义了它的工作方式（计划、前言消息、AGENTS.md 规则、补丁流程），
+        // 覆盖掉会让模型失去这些行为。MT-Agent 专门内置一份 codex-fallback-prompt.md 就是这个原因。
         if let trimmed = instructions?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
-            params["baseInstructions"] = trimmed
             params["developerInstructions"] = trimmed
         }
         // 模型同样来自 设置 → 模型（与 config.toml 的 model_provider 配套）
@@ -343,12 +350,43 @@ final class CodexRuntime {
             || e.message.lowercased().contains("invalid")
     }
 
+    /// data:image/...;base64 落成 $TMPDIR 里的真实文件，供 codex 的 localImage 读取
+    static func materialize(dataURL: String) -> String? {
+        guard let comma = dataURL.firstIndex(of: ",") else { return nil }
+        let header = String(dataURL[dataURL.startIndex..<comma])
+        let payload = String(dataURL[dataURL.index(after: comma)...])
+        guard header.contains("base64"), let data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters) else {
+            return nil
+        }
+        let ext: String
+        if header.contains("image/png") { ext = "png" }
+        else if header.contains("image/heic") { ext = "heic" }
+        else if header.contains("image/webp") { ext = "webp" }
+        else { ext = "jpg" }
+
+        let dir = NSTemporaryDirectory() + "codex-images"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/img-\(UUID().uuidString).\(ext)"
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            return path
+        } catch {
+            NetworkLog.shared.log("[codex] 图片落盘失败：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
     private func startTurn(_ turn: CodexTurn, threadId: String) {
         turn.onStatus?("思考中…")
         var input: [[String: Any]] = []
-        // 附件图片按官方 UserInput.image 类型发送（最多 4 张）
+        // 附件图片：data URL 落成临时文件后走官方 localImage
+        // （image.url 要求可访问的 URL，data: 形式不被接受）
         for image in turn.images.prefix(4) {
-            input.append(["type": "image", "url": image])
+            if image.hasPrefix("data:"), let path = CodexRuntime.materialize(dataURL: image) {
+                input.append(["type": "localImage", "path": path])
+            } else {
+                input.append(["type": "image", "url": image])
+            }
         }
         input.append(["type": "text", "text": turn.prompt, "text_elements": []])
 
