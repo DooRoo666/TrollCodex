@@ -62,6 +62,16 @@ struct ChatView: View {
         ChatListGrouping.group(store.currentMessages)
     }
 
+    /// 输入 `/xxx` 时的命令候选（最多 8 条）；没在打斜杠就是 nil
+    private var slashCandidates: [String]? {
+        let text = inputText.trimmingCharacters(in: .whitespaces)
+        guard text.hasPrefix("/"), !text.contains(" ") else { return nil }
+        let query = String(text.dropFirst()).lowercased()
+        let names = CodexToolBridge.exposedDefinitions().map { $0.name }
+        let matched = query.isEmpty ? names : names.filter { $0.lowercased().contains(query) }
+        return Array(matched.prefix(8))
+    }
+
     private var visibleChatItems: [ChatListGrouping.Item] {
         let items = allChatItems
         return items.count > renderLimit ? Array(items.suffix(renderLimit)) : items
@@ -825,6 +835,30 @@ struct ChatView: View {
                 // v3.4.7：顶部间距减半(16→8)，用户反馈上方空太多；底部 16 保留(胶囊到输入框的加大间距)
                 .padding(.top, 8)
                 .padding(.bottom, 16)
+
+            // v7.1.311：输入 `/` 时的命令候选（对齐 MT-Agent 的 CAComposerPopupView）。
+            // 只匹配"斜杠开头且还没打空格"，点一下把工具名补全成 `/name `。
+            if let candidates = slashCandidates, !candidates.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(candidates, id: \.self) { name in
+                            Button {
+                                inputText = "/" + name + " "
+                            } label: {
+                                Text("/" + name)
+                                    .font(.caption.monospaced())
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(10)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 8)
+            }
 
             // v3.0.83：输入栏 —— 终端键 + 输入框 + +号 + 发送键 统一放进同一个大圆角框
             HStack(spacing: 6) {
