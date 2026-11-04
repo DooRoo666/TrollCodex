@@ -93,21 +93,23 @@ extension CodexKernel {
         }
 
         // 外部 MCP 客户端复用工具（可选，与内核通道无关）
-        if fm.fileExists(atPath: mcpOptInPath) {
-            let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
-            let exe = Bundle.main.bundlePath + "/" + exeName
-            blocks.append("""
-            [mcp_servers.trollagent]
-            command = "\(exe)"
-            args = ["--codex-mcp"]
-            startup_timeout_sec = 30.0
-            """)
-        }
+        // v7.1.317：原来的 opt-in 注册已删除——内核自己就要走 MCP（见下），
+        // 无条件注册；`trollcodex-mcp.txt` 现在只影响外部客户端能否看到同名 server。
 
-        // v7.1.315：关掉 code mode host。
-        // 证据：设备上工具调用返回"运行环境异常退出（SIGTRAP）"——那是 codex 拉起的
-        // codex-code-mode-host 崩溃（iOS 上它要 JIT/额外权限）。关掉后 codex 走普通
-        // dynamicTools 回调（直接进我们进程内的 ToolRegistry），不再依赖这个外部进程。
+        // v7.1.317：工具通道改为 MCP（stdio），不再依赖 dynamicTools。
+        // 原因：0.162.1 的 dynamicTools 由 code-mode 的本地子进程 codex-code-mode-host 执行，
+        // 该进程在 iOS 上即使签了 platform-application 仍 SIGTRAP（要 JIT 运行时）。
+        // MCP 是我们自己的 `--codex-mcp` 子进程（纯 stdio JSON-RPC），完全绕开 code mode。
+        let exeName = (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String) ?? "TrollAgent"
+        let exe = Bundle.main.bundlePath + "/" + exeName
+        blocks.append("""
+        [mcp_servers.trollagent]
+        command = "\(exe)"
+        args = ["--codex-mcp"]
+        startup_timeout_sec = 30.0
+        """)
+
+        // 双保险：显式关掉 code mode 相关特性
         blocks.append("""
         [features]
         code_mode_host = false

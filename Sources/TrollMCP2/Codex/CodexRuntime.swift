@@ -361,7 +361,9 @@ final class CodexRuntime {
     /// `thread/start`：一次请求，不做参数降级。
     /// dynamicTools 由 initialize 的 capabilities.experimentalApi 授权；被拒就明确报错。
     private func startThread(instructions: String?, completion: @escaping (Result<String, Error>) -> Void) {
-        let specs = CodexEngine.dynamicToolSpecs()
+        // v7.1.317：不再发 dynamicTools——它由 code-mode host 执行，在 iOS 上必崩（SIGTRAP）。
+        // 工具改由 config.toml 注册的 MCP server（本 App 的 --codex-mcp）提供。
+        let specs: [[String: Any]] = []
         var params: [String: Any] = ["cwd": CodexKernel.workspacePath]
         if !specs.isEmpty { params["dynamicTools"] = specs }
         // 系统提示词走 developerInstructions，**不覆盖 baseInstructions**：
