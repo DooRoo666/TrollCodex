@@ -16,6 +16,8 @@ struct ChatView: View {
     // v7.2.3-fix14：工具卡参数行折叠——默认一行+▽，点击展开完整命令/参数
     /// v7.2.3-fix20：连续工具折叠展开状态（按组 id）
     @State private var toolsRunExpanded: Set<String> = []
+    /// v7.1.305：长会话折叠——消息超过阈值时先只渲染尾部，前面折成一行可展开
+    @State private var historyExpanded = false
     // v2.9.234：推理强度/智能搜索持久化(@AppStorage)——之前纯@State,关app重开必丢
     @AppStorage("chat_reasoning") private var reasoning = 0   // 0=低 1=中 2=高 3=最高(xhigh) 4=极限(max)
     @AppStorage("chat_smart_search") private var smartSearch = true
@@ -51,6 +53,24 @@ struct ChatView: View {
     @State private var chatScrollOffset: CGFloat = 0
     @State private var chatContentHeight: CGFloat = 0
     @State private var chatViewportHeight: CGFloat = 0
+
+    // v7.1.305：长会话折叠。阈值以上只渲染尾部，点按钮展开全部。
+    private static let chatRenderWindow = 80
+
+    private var visibleChatItems: [ChatListGrouping.Item] {
+        let items = ChatListGrouping.group(store.currentMessages)
+        guard !historyExpanded, items.count > Self.chatRenderWindow else { return items }
+        return Array(items.suffix(Self.chatRenderWindow))
+    }
+
+    /// 被折叠掉的条数（nil = 不需要折叠按钮）
+    private var hiddenHistoryCount: Int? {
+        guard !historyExpanded else { return nil }
+        let total = ChatListGrouping.group(store.currentMessages).count
+        guard total > Self.chatRenderWindow else { return nil }
+        return total - Self.chatRenderWindow
+    }
+
     var body: some View {
         CompatNav {
             VStack(spacing: 0) {
@@ -552,9 +572,21 @@ struct ChatView: View {
                     // 被裁在旧高度里；下一条插入触发整表重排才补显示。
                     // 消息行高度会随 streaming 变化，这个容器不能惰性渲染。
                     VStack(spacing: 12) {
+                        // v7.1.305：长会话折叠（折中方案）——保留 VStack 修裁切，但避免几百条全量重排。
+                        // 超过 80 条时先只渲染尾部 80 条，前面折成一行按钮，点开才展开。
+                        if let hidden = hiddenHistoryCount {
+                            Button {
+                                historyExpanded = true
+                            } label: {
+                                Text("更早的 \(hidden) 条消息 · 点击展开")
+                                    .font(.footnote)
+                                    .foregroundColor(.accentColor)
+                            }
+                            .padding(.vertical, 6)
+                        }
                         // v7.2.3-fix20：连续工具折叠——相邻已完成工具消息聚合成组，
                         // 组默认一行"运行了 N 个工具"，展开显示各工具卡
-                        ForEach(ChatListGrouping.group(store.currentMessages), id: \.id) { item in
+                        ForEach(visibleChatItems, id: \.id) { item in
                             switch item {
                             case .msg(let msg):
                                 MessageBubble(
