@@ -89,7 +89,20 @@ struct ChatView: View {
             }
             // v2.9.244：输入框改用 safeAreaInset 挂底部——标准键盘避让，不再手动 padding 双重压缩内容区
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                inputBar
+                VStack(spacing: 0) {
+                    // v7.1.310：上一轮耗时（对齐 MT-Agent 的 turn 头信息：时长 + token + 速度）
+                    if !store.isLoading, let timing = CodexRuntime.shared.lastTiming {
+                        Text(timing.description)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    inputBar
+                }
             }
             .navigationTitle(selectionMode ? L10n.t("i18n_1031", selectedIds.count) : store.currentTitle)
             .navigationBarTitleDisplayMode(.inline)
