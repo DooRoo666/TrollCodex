@@ -424,6 +424,14 @@ final class CodexRuntime {
 
         case "item/started", "item/completed", "item/updated":
             guard let item = params["item"] as? [String: Any] else { return }
+            // 兜底：某些版本不发 agentMessage/delta，只在 item/completed 里给全文
+            if method == "item/completed", (item["type"] as? String) == "agentMessage" {
+                let full = (item["text"] as? String) ?? ""
+                if !full.isEmpty && turn.text.isEmpty {
+                    turn.text = full
+                    DispatchQueue.main.async { turn.onDelta?(full) }
+                }
+            }
             emitCard(for: item, completed: method == "item/completed", turn: turn)
 
         case "thread/tokenUsage/updated", "token_count":
@@ -496,6 +504,10 @@ final class CodexRuntime {
             }
         case "reasoning":
             return   // 思考走 onThinking，不画卡片
+        case "userMessage", "agentMessage", "plan", "todoList", "warning", "error":
+            // 这些是对话内容本身（用户消息 / 助手消息 / 计划），不是工具调用。
+            // 旧实现落到 default 分支，于是聊天里冒出一堆名叫 "userMessage"/"agentMessage" 的"工具卡"。
+            return
         default:
             args = Self.jsonText(item)
         }

@@ -80,6 +80,20 @@ class Server:
             with self.lock:
                 self.lines.append(line)
 
+    def method_names(self):
+        """本轮收到的通知方法名（用于确认 delta 事件是否存在）"""
+        with self.lock:
+            snapshot = list(self.lines)
+        names = set()
+        for line in snapshot:
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(msg, dict) and "method" in msg:
+                names.add(msg["method"])
+        return sorted(names)
+
     def dump_notifications(self, label):
         """把非响应行（通知/服务端请求）原样打出来——用于观察 error 的真实结构"""
         with self.lock:
@@ -240,6 +254,7 @@ def main():
             # 关键：把 turn 期间的 error 通知原样打出来，App 里那条 -7 就是它
             time.sleep(3)
             srv.dump_notifications("turn/start 之后")
+            say("      本轮通知方法: " + ", ".join(srv.method_names()))
 
         say("")
         if failures:

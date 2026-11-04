@@ -108,8 +108,29 @@ final class CodexEngine: ChatEngine {
         return blocks.joined(separator: "\n\n")
     }
 
+    /// 取"真正的用户提问"。
+    ///
+    /// 坑：Models 在 `history` **末尾**追加了两类注入型 user 消息——
+    ///   1) 环境快照（`dynamicStatePrompt()` + "(Environment snapshot …"）
+    ///   2) 参数纠错 / 空回复纠错（pendingParamCorrection / pendingEmptyReplyCorrection）
+    /// 直接 `messages.last(where: role == "user")` 拿到的是环境快照，
+    /// 于是不管用户问什么都只把快照发给 codex → 现象就是"答非所问、永远在讲环境/模型"。
     static func lastUserText(in messages: [ChatMessage]) -> String {
-        messages.last(where: { $0.role == "user" })?.content ?? ""
+        for msg in messages.reversed() where msg.role == "user" {
+            if isInjectedUserMessage(msg.content) { continue }
+            return msg.content
+        }
+        return messages.last(where: { $0.role == "user" })?.content ?? ""
+    }
+
+    /// 是否为 Models 自动注入的"伪用户消息"
+    static func isInjectedUserMessage(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return true }
+        if t.contains("Environment snapshot") { return true }
+        if t.hasPrefix("You just ran tools but your reply body is empty") { return true }
+        if t.hasPrefix("The tool ") && t.contains("missing required params") { return true }
+        return false
     }
 
     /// 新建 thread 时，把最近几轮压成一段文字一起带过去——
@@ -122,6 +143,8 @@ final class CodexEngine: ChatEngine {
         for msg in messages.suffix(24) {
             switch msg.role {
             case "user":
+                // 跳过环境快照/纠错这类注入消息，只重放真实对话
+                if isInjectedUserMessage(msg.content) { continue }
                 lines.append("User: " + trim(msg.content, 400))
             case "assistant":
                 let text = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
