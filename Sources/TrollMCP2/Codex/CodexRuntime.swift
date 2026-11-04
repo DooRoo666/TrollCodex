@@ -596,14 +596,48 @@ final class CodexRuntime {
             if let r = item["result"] { result = Self.jsonText(r) }
             if let err = item["error"], !(err is NSNull) { result = Self.jsonText(err); failed = true }
         case "fileChange":
-            name = "fileChange"
+            // v7.1.312：渲染成"文件改动卡"——标题列路径，结果列放 diff（截断），
+            // 对齐 MT-Agent 的 CAGitChangeCell / CAGitDiffViewController。
+            name = "文件改动"
             if let changes = item["changes"] as? [[String: Any]] {
                 let paths = changes.compactMap { ($0["path"] as? String) ?? ($0["file"] as? String) }
                 args = paths.joined(separator: "\n")
+                var diffs: [String] = []
+                for change in changes {
+                    if let diff = (change["diff"] as? String) ?? (change["patch"] as? String) {
+                        let path = (change["path"] as? String) ?? ""
+                        diffs.append((path.isEmpty ? "" : "--- \(path)\n") + String(diff.prefix(1200)))
+                    }
+                }
+                if !diffs.isEmpty { result = diffs.joined(separator: "\n\n") }
             }
         case "reasoning":
             return   // 思考走 onThinking，不画卡片
-        case "userMessage", "agentMessage", "plan", "todoList", "warning", "error":
+        case "plan", "todoList":
+            // v7.1.312：计划/待办渲染成勾选列表卡（对齐 MT 的 CAPlanTodoRowView /
+            // CAPlanProgressViewController）。codex 的字段名不统一，这里逐个试。
+            name = "计划"
+            let steps = (item["steps"] as? [[String: Any]])
+                ?? (item["items"] as? [[String: Any]])
+                ?? ((item["plan"] as? [String])?.map { ["text": $0, "status": "pending"] } ?? [])
+            if steps.isEmpty {
+                args = Self.jsonText(item)
+            } else {
+                args = steps.enumerated().map { index, step in
+                    let text = (step["text"] as? String) ?? (step["title"] as? String)
+                        ?? (step["step"] as? String) ?? ""
+                    let status = (step["status"] as? String) ?? "pending"
+                    let mark: String
+                    switch status {
+                    case "completed", "done": mark = "☑"
+                    case "in_progress", "running": mark = "▶"
+                    case "failed", "error": mark = "✗"
+                    default: mark = "☐"
+                    }
+                    return "\(mark) \(index + 1). \(text)"
+                }.joined(separator: "\n")
+            }
+        case "userMessage", "agentMessage", "warning", "error":
             // 这些是对话内容本身（用户消息 / 助手消息 / 计划），不是工具调用。
             // 旧实现落到 default 分支，于是聊天里冒出一堆名叫 "userMessage"/"agentMessage" 的"工具卡"。
             return

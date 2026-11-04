@@ -18,6 +18,8 @@ struct ChatView: View {
     @State private var toolsRunExpanded: Set<String> = []
     /// v7.1.306：长会话分页加载——先渲染尾部 N 条，点顶部分批加载更早的
     @State private var renderLimit = 80
+    /// v7.1.312：请求进行中排队的输入，当前轮结束后自动发出
+    @State private var queuedText: String?
     // v2.9.234：推理强度/智能搜索持久化(@AppStorage)——之前纯@State,关app重开必丢
     @AppStorage("chat_reasoning") private var reasoning = 0   // 0=低 1=中 2=高 3=最高(xhigh) 4=极限(max)
     @AppStorage("chat_smart_search") private var smartSearch = true
@@ -707,7 +709,15 @@ struct ChatView: View {
                     WorkflowManager.shared.finishRun(success: true)
                 }
                 // v7.1.109-peers：请求完成 → 刷新上下文环形指示器（records 读文件，仅此刻读一次）
-                if !loading { refreshRingTok() }
+                if !loading {
+                    refreshRingTok()
+                    // v7.1.312：排队的输入在当前轮结束后自动发出
+                    if let queued = queuedText, !queued.isEmpty {
+                        queuedText = nil
+                        inputText = queued
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { send() }
+                    }
+                }
             }
             .onAppear { refreshRingTok() }
             // v2.9.235：键盘高度变化→自动滚到底（高度本身由外层 VStack 监听，空会话也能避让键盘）
@@ -1079,6 +1089,14 @@ struct ChatView: View {
     private func send() {
         // v7.4.0-fix71：会话异步加载完成前直接拦截（按钮 disabled 之外的双保险）
         guard !store.isLoadingData else { return }
+        // v7.1.312：请求进行中允许先输入——消息排队，等当前轮结束自动发出
+        // （对齐 MT-Agent 的 CAQueuedMessageBubbleView 行为）
+        if store.isLoading, !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            queuedText = inputText
+            inputText = ""
+            showToast("已排队，当前回答结束后自动发送")
+            return
+        }
         guard let cfg = modelStore.defaultConfig,
               (!inputText.isEmpty || !pendingAttachments.isEmpty || !pendingImages.isEmpty) else { return }
         // v3.1.5: 自动提取关键信息（App 名、bundle id、文件路径等）
