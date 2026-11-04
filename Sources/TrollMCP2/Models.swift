@@ -1520,7 +1520,10 @@ final class ConversationStore: ObservableObject {
     /// 切后台：在途流式请求转交 background session 系统代传。
     /// 成功接管 → cancel 原流式（-999 静默，不弹错误气泡）；不支持（协议/中转）→ 不动，靠 fix72 前台重试。
     func handoffActiveRequestToBackground() {
-        // Codex 是唯一内核：请求在 codex 子进程里跑，切后台无法代传到 OpenAI 通道
+        // Codex 是唯一内核：请求在 codex 子进程里跑。
+        // v7.1.299 起由 BackgroundKeeper 持有 UIBackgroundTask + entitlements
+        // (com.apple.private.background-task.allowed)，切后台后 codex 继续跑，
+        // 不再需要"取消 + 转 OpenAI 通道"的代传，所以这里直接返回。
         guard !CodexKernel.isEnabled else { return }
         guard isLoading, currentClient != nil,
               let ctx = lastRequestContext else { return }

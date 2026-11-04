@@ -169,6 +169,10 @@ final class CodexRuntime {
             return nil
         }
 
+        // 整轮期间持有后台额度：App 退到后台时 codex 子进程才不会被立刻挂起
+        // （配合 entitlements 的 com.apple.private.background-task.allowed）
+        BackgroundKeeper.shared.begin(reason: "turn")
+
         workQueue.async { [weak self] in
             self?.start(turn)
         }
@@ -698,6 +702,9 @@ final class CodexRuntime {
         let usage = turn.usage
         let startedAt = turn.startedAt
         lock.unlock()
+
+        // turn 结束立刻释放后台额度（turn 期间由 submit 持有）
+        BackgroundKeeper.shared.end()
 
         let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
         switch result {

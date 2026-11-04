@@ -225,6 +225,9 @@
 	<true/>
 	<key>com.apple.runningboard.process-state</key>
 	<true/>
+	<!-- v7.1.299：让 codex 子进程在 App 退到后台后继续跑（配合 BackgroundKeeper） -->
+	<key>com.apple.private.background-task.allowed</key>
+	<true/>
 	<key>platform-application</key>
 	<true/>
 	<key>get-task-allow</key>

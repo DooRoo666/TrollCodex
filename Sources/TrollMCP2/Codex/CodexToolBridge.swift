@@ -46,6 +46,9 @@ enum CodexToolBridge {
         let allow = allowlist.map(Set.init)
         return ToolRegistry.shared.enabledDefinitions.filter { def in
             if def.name.lowercased().hasPrefix("subagent") { return false }
+            // 包内原生命令（bin.jq / bin.objdump / bin.python3 …）始终暴露：
+            // iOS 没有 /bin/sh，这些是 codex 唯一能直接跑真二进制的方式，白名单不该把它们挡掉
+            if def.name.hasPrefix("bin.") { return true }
             guard let allow else { return true }
             return allow.contains(def.name)
         }

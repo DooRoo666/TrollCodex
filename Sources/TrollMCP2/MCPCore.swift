@@ -1581,6 +1581,11 @@ public final class ToolRegistry: ObservableObject {
         register(GitHubExecTool())
         // v3.7.7c: 移除 ish.bind 注册——bind mount 已由 autoBind 全自动（命令引用 iOS 路径自动挂载+改写），
         // 手动 bind 工具对 AI 是误导（会以为要手动挂载）。类定义保留供开发者调试/真机验证。
+
+        // v7.1.299: 包内原生工具（$APP/bin 的真二进制：jq/objdump/r2/python3/node…）
+        // 注册成 bin.<cmd>，让 codex 不经 shell 也能直接调用（iOS 没有 /bin/sh）。
+        BinTools.registerAll()
+
         AuditLog.shared.log("core", detail: "Registered \(definitions.count) tools")
     }
 }
