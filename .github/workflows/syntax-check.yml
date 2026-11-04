@@ -1,0 +1,46 @@
+# 快反馈：只做 Swift 语法解析（不链接、不打包、不跑 theos）
+#
+# 为什么需要：完整出包一次 13 分钟，改一行协议代码等太久。
+# 语法错误（括号不配对、字符串没闭合、编辑残留）是这类改动最常见的失败形态，
+# 而 `swiftc -parse` 不做类型检查、不需要 iSH 头文件/依赖库，30–60 秒就能给出结论。
+#
+# 它只替代"语法层"反馈；类型错误仍然要靠主构建的 Build IPA 步骤。
+name: syntax-check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Sources/**"
+      - "Package.swift"
+  workflow_dispatch:
+
+jobs:
+  parse:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse Swift sources
+        run: |
+          set -uo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK: $SDK"
+          fail=0
+          count=0
+          while IFS= read -r f; do
+            count=$((count+1))
+            if ! out=$(xcrun swiftc -parse -sdk "$SDK" -target arm64-apple-ios15.0 "$f" 2>&1); then
+              echo "FAIL  $f"
+              echo "$out" | head -20
+              fail=$((fail+1))
+            fi
+          done < <(find Sources -name '*.swift' | sort)
+          echo "----"
+          echo "解析文件数: $count  失败: $fail"
+          if [ "$fail" -ne 0 ]; then
+            echo "语法检查未通过"
+            exit 1
+          fi
+          echo "语法检查通过（注意：未做类型检查，类型错误仍需主构建验证）"

@@ -54,6 +54,37 @@ jobs:
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" main
           echo ">>> version bumped to $NEW (build $((BUILD+1)))"
 
+      # v7.1.300：SwiftPM 增量缓存。
+      # 此前 .build 完全没有缓存，每次 push 都从零编译——这是 build job 812s 的主因。
+      # key 带源码哈希（改代码必 miss），restore-keys 用滚动前缀兜住：
+      # 源码一变仍能恢复上一份 .build，SwiftPM 只重编改动的文件。
+      - name: Cache SwiftPM build artifacts
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ hashFiles('Package.resolved', 'Package.swift') }}-${{ hashFiles('Sources/**/*.swift', 'CISH/**', 'CMitm/**', 'CHev/**', 'CLaunch/**') }}
+          restore-keys: |
+            swiftpm-${{ hashFiles('Package.resolved', 'Package.swift') }}-
+            swiftpm-
+
+      # OpenSSL 产物：脚本里有"存在即跳过"，但 openssl-stage 从没进过 cache → 等于每次重编（实测 113s）
+      - name: Cache OpenSSL stage
+        uses: actions/cache@v4
+        with:
+          path: openssl-stage
+          key: openssl-stage-${{ hashFiles('scripts/build-openssl.sh') }}
+
+      # theos 中间产物（不跳过 make，让 make 自己做增量：命中后只重链，约 10–20s vs 98s）
+      - name: Cache theos objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            tweaks/*/.theos
+            HUD/.theos
+          key: theos-obj-${{ hashFiles('tweaks/**/*.xm', 'tweaks/**/*.x', 'tweaks/**/Makefile', 'tweaks/**/*.plist', 'HUD/**/*.m', 'HUD/**/Makefile') }}
+          restore-keys: |
+            theos-obj-
+
       - name: Install tools
         # fix3cy26：ldid-procursus（TrollStore 社区版）——saurik ldid 会静默嵌空 entitlements，
         #   packet-tunnel-provider 丢失 → NE 拒载 appex。加 xcodegen（P1 Xcode appex 形态）。
@@ -318,7 +349,12 @@ jobs:
       # v7.2.3-fix9：回归测试编译验证——纯逻辑单测（Markdown 解析/引用提取/
       # 并行安全判定）进编译基线；编译绿即防"修复引入新状态"。运行需 iOS
       # destination（模拟器下载慢），先以编译验证锁住，运行留待后续接 xcodebuild。
+      # v7.1.300：编译门改为按需。
+      # 原因：`swift build --build-tests -c debug` 是把整个模块按 macOS/debug 再编一遍，
+      # 与 iOS release 产物毫无复用，纯属重复劳动（实测 1.5–3 分钟）。
+      # 出包一致性由 Build IPA 本身保证；测试编译在手动触发时跑。
       - name: Build tests (compile gate)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           cd "$GITHUB_WORKSPACE"
           swift build --build-tests -c debug 2>&1 | tail -20
